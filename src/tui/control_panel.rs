@@ -1,7 +1,13 @@
-use std::io;
-
-use crossterm::{event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind}, execute, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}};
-use ratatui::{buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, prelude::CrosstermBackend, style::Stylize, symbols::border, text::{Line, Text}, widgets::{Block, Paragraph, Widget}, Frame, Terminal};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::{
+    buffer::Buffer, 
+    layout::{Constraint, Direction, Layout, Rect}, 
+    style::Stylize, 
+    symbols::border, 
+    text::{Line, Text}, 
+    widgets::{Block, Paragraph, Widget}, 
+    Frame
+};
 
 use crate::widgets::workers::Workers;
 use anyhow::Result;
@@ -48,16 +54,13 @@ impl App {
 impl TUIPanel for App {
        
     fn draw(&self, frame: &mut Frame) {
-        // Layout
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
             .split(frame.area());
 
-        // Top chunk: show "Counter App Tutorial"
         frame.render_widget(self, chunks[0]);
 
-        // Bottom chunk: two Worker panels side by side
         let chunks2 = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -77,11 +80,9 @@ impl TUIPanel for App {
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Display the user-provided or prompted values in the top block
         let line1 = self.url.clone();
         let line2 = self.token.clone();
 
-        // Build the TUI lines
         let title = Line::from(" Counter App Tutorial ".bold());
         let instructions = Line::from(vec![
             " Decrement ".bold().into(),

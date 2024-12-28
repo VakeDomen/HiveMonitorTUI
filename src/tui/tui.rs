@@ -1,6 +1,10 @@
 use std::io;
 
-use crossterm::{event::{DisableMouseCapture, EnableMouseCapture}, execute, terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}};
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture}, 
+    execute, 
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}
+};
 use ratatui::{prelude::CrosstermBackend, Frame, Terminal};
 use anyhow::Result;
 
@@ -9,7 +13,6 @@ pub trait TUIPanel {
     fn draw(&self, frame: &mut Frame);
     fn handle_events(&mut self) -> Result<bool>;
 }
-
 
 pub struct TUI {
     exit: bool,
@@ -20,8 +23,7 @@ impl TUI {
         TUI { exit: false }
     }
 
-    pub fn run(&mut self, mut panel: impl TUIPanel) -> Result<()> {
-        // If `url` or `token` is missing, prompt before the main loo
+    pub fn run(&mut self, panel: &mut impl TUIPanel) -> Result<()> {
         self.exit = false;
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -32,14 +34,9 @@ impl TUI {
         
         while !self.exit {
             terminal.draw(|frame| panel.draw(frame))?;
-            self.exit = match panel.handle_events() {
-                Ok(b) => b,
-                Err(_) => true,
-            };
+            self.exit = panel.handle_events()?;
         }
 
-
-        // Cleanup terminal
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
