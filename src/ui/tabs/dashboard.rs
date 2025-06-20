@@ -553,7 +553,6 @@ fn draw_model_confirmation_panel(f: &mut Frame, area: Rect, app: &App, model_nam
 }
 
 
-// Modified draw_model_response_panel to display streaming output
 fn draw_model_response_panel(f: &mut Frame, area: Rect, app: &App, model_name: &str, action_type: ActionType, output_lines: &Vec<String>, is_overall_success: &bool) {
     let action_verb = match action_type {
         ActionType::Pull => "Pull",
@@ -562,46 +561,40 @@ fn draw_model_response_panel(f: &mut Frame, area: Rect, app: &App, model_name: &
     let title = format!("{} Model Result", action_verb);
 
     let block_style = if *is_overall_success {
-        Style::default().fg(COLOR_STATUS_GOOD).bg(COLOR_DEFAULT_BG) // Green for overall success
+        Style::default().fg(COLOR_STATUS_GOOD).bg(COLOR_DEFAULT_BG)
     } else {
-        Style::default().fg(COLOR_STATUS_BAD).bg(COLOR_DEFAULT_BG) // Red for overall failure
+        Style::default().fg(COLOR_STATUS_BAD).bg(COLOR_DEFAULT_BG)
     };
 
     let block = Block::default()
         .title(Span::styled(&title, Style::default().fg(COLOR_BORDER)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(COLOR_BORDER))
-        .style(block_style); // Apply block style based on overall success/failure
+        .style(block_style);
     f.render_widget(&block, area);
 
     let inner_area = block.inner(area);
 
-    let mut lines = vec![
+    let mut lines_to_display: Vec<Line> = vec![
         Line::from(format!("{}: {}", action_verb, model_name)),
         Line::from(""),
     ];
 
-    // Add all output lines
-    for line_text in output_lines {
-        // You might want more sophisticated parsing here to color error lines differently
-        // For now, it just displays them as they come.
-        lines.push(Line::from(line_text.clone()));
-    }
+    // Convert output_lines to Line objects
+    let content_lines: Vec<Line> = output_lines.iter().map(|s| Line::from(s.clone())).collect();
+    lines_to_display.extend(content_lines);
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press any key to dismiss", Style::default().fg(Color::DarkGray))));
+    lines_to_display.push(Line::from("")); // Spacer before instructions
+    lines_to_display.push(Line::from(Span::styled("Use UP/DOWN to scroll, any key to dismiss", Style::default().fg(Color::DarkGray))));
 
-    // Use a List widget for scrollable output if it gets long
-    let output_list_items: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
-    let output_list = List::new(output_list_items)
-        .block(Block::default()) // No extra borders, already in outer block
-        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)); // Use default style for content
-    
-    // If you need scrolling, you'd manage ListState and pass it.
-    // For now, it just displays all lines.
-    f.render_widget(output_list, inner_area);
+
+    let paragraph = Paragraph::new(lines_to_display)
+        .scroll((app.action_panel_scroll, 0)) // Apply scrolling here
+        .alignment(ratatui::layout::Alignment::Left) // Left align for log-like output
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+
+    f.render_widget(paragraph, inner_area);
 }
-
 // --- New drawing functions for Action Panel ---
 
 fn draw_model_action_panel(f: &mut Frame, area: Rect, app: &App, model_name: &str, action_type: ActionType) {

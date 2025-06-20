@@ -12,34 +12,68 @@ use tokio_util::io::StreamReader;
 use crate::{app::{ActionPanelState, ActionType, App, Focus, Tab}, clients::{infer_client::HiveInferClient, manage_client::HiveManageClient}, events::spawner::{Event, EventSpawner}, models::{GenerateRequest, GenerateResponse}};
 
 pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<App>>) {
-    let client = {
-        let mut app = app_arc.lock().await;
-        // Instantiate client each tick to pick up profile changes
+    let manage_client = {
+        let app = app_arc.lock().await;
         let profile = &app.profiles[app.active_profile];
-        let client = match HiveManageClient::new(
+        match HiveManageClient::new(
             format!("{}:{}", profile.host, profile.port_manage),
             &profile.admin_token,
         ) {
             Ok(c) => c,
             Err(e) => {
-                app.add_banner(format!("Can't contact HiveCore: {}", e));
+                app_arc.clone().lock().await.add_banner(format!("Can't contact HiveCore Manage API: {}", e));
                 return;
             },
-        };
-
-        client
+        }
     };
 
     loop {
-
-        let tab = {
+        // Capture necessary state values from app_arc at the start of each loop iteration
+        let current_tab;
+        let current_focus;
+        // current_action_panel_state is now less directly used outside locks
+        // let current_action_panel_state;
+        { // Scope to release lock quickly
             let app = app_arc.lock().await;
-            app.current_tab.clone()
-        };
+            current_tab = app.current_tab;
+            current_focus = app.focus;
+            // current_action_panel_state = app.action_panel_state.clone();
+        } // `app` MutexGuard is dropped here.
 
         match event_spawner.next().await {
             Event::Input(key) => {
-                let mut app = app_arc.lock().await;
+                // If an action is in progress and we are NOT in the response view,
+                // we should prevent most input. The `focus_left/right` already
+                // handles this with banners, but for general chars/enter, we can
+                // ignore them.
+                if app_arc.lock().await.is_action_in_progress && app_arc.lock().await.focus != Focus::ActionPanelResponse {
+                    // Allow Q to quit even during action.
+                    if key.code == KeyCode::Char('q') { break; }
+                    // Allow ESC to cancel confirmation/input.
+                    if key.code == KeyCode::Esc {
+                        let mut app = app_arc.lock().await;
+                        if app.focus == Focus::ActionPanelInput || app.focus == Focus::ActionPanelConfirm {
+                            // This part duplicates logic, consider moving ESC handler to a single place
+                            // or ensuring it cascades. For now, it's safer to allow this critical escape.
+                            if let Some(handle) = app.action_task_handle.take() { handle.abort(); }
+                            app.is_action_in_progress = false;
+                            app.action_panel_state = ActionPanelState::None;
+                            app.focus = Focus::ActionsList;
+                            app.action_input_model_name.clear();
+                            app.action_input_cursor_position = 0;
+                            app.action_panel_scroll = 0;
+                            app.add_banner("Action cancelled by user.");
+                            continue; // Skip further processing of this key
+                        }
+                    }
+                    // For other keys, just ignore and add banner
+                    app_arc.lock().await.add_banner("Action in progress. Input ignored.");
+                    continue; // Skip processing other keys if action is in progress
+                }
+
+
+                let mut app = app_arc.lock().await; // Lock once for input handling
+
                 match app.focus {
                     Focus::WorkersList | Focus::ActionsList | Focus::GlobalView => {
                         match key.code {
@@ -49,7 +83,7 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                             KeyCode::Up | KeyCode::Char('w') => on_key_up(&mut app),
                             KeyCode::Down | KeyCode::Char('s') => on_key_down(&mut app),
                             KeyCode::Char('r') => on_key_r(&mut app),
-                            KeyCode::Enter => on_enter_main_view(&mut app).await, // New handler for main view ENTER
+                            KeyCode::Enter => on_enter_main_view(&mut app).await,
                             KeyCode::Backspace => on_backspace(app),
                             KeyCode::Char(c) => on_unhandled_character(&mut app, c),
                             _ => {}
@@ -58,14 +92,13 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                     Focus::ActionPanelInput => {
                         match key.code {
                             KeyCode::Enter => {
-                                // Transition from input to confirmation
                                 if !app.action_input_model_name.is_empty() {
                                     let model_name = app.action_input_model_name.clone();
                                     let action_type = match app.action_panel_state {
                                         ActionPanelState::PullModel => ActionType::Pull,
                                         ActionPanelState::DeleteModel => ActionType::Delete,
-                                        _ => { // Fallback, should not happen if state managed correctly
-                                            app.add_banner("Unexpected action state for confirmation.");
+                                        _ => {
+                                            app.add_banner("Unexpected action state. Please restart action.");
                                             app.focus = Focus::ActionsList;
                                             app.action_panel_state = ActionPanelState::None;
                                             return;
@@ -73,28 +106,29 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                                     };
                                     app.action_panel_state = ActionPanelState::Confirmation(model_name, action_type);
                                     app.focus = Focus::ActionPanelConfirm;
-                                    app.confirmation_selection = 0; // Default to Yes
+                                    app.confirmation_selection = 0;
                                 } else {
                                     app.add_banner("Model name cannot be empty.");
                                 }
                             },
-                            KeyCode::Esc => { // Cancel input
+                            KeyCode::Esc => {
+                                // Cancel from input view
                                 app.action_panel_state = ActionPanelState::None;
-                                app.focus = Focus::ActionsList; // Return to ActionsList
-                                app.action_input_model_name.clear(); // Clear input
+                                app.focus = Focus::ActionsList;
+                                app.action_input_model_name.clear();
                                 app.action_input_cursor_position = 0;
+                                app.action_panel_scroll = 0;
                             },
                             KeyCode::Backspace => {
                                 app.backspace_action_field();
                             },
                             KeyCode::Left => {
-                                app.focus_left(); // Uses existing focus_left which handles cursor for ActionPanelInput
+                                app.focus_left();
                             },
                             KeyCode::Right => {
-                                app.focus_right(); // Uses existing focus_right which handles cursor for ActionPanelInput
+                                app.focus_right();
                             },
                             KeyCode::Char(c) => {
-                                // Only allow printable characters, exclude modifiers like Ctrl
                                 if key.modifiers.is_empty() {
                                     app.input_char_into_action_field(c);
                                 }
@@ -107,17 +141,16 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                             KeyCode::Left | KeyCode::Right => {
                                 app.confirmation_selection = 1 - app.confirmation_selection;
                             },
-                            
+
                             KeyCode::Enter => {
-                                // Capture required state before dropping the MutexGuard for spawning
                                 let action_state = app.action_panel_state.clone();
                                 let model_name_for_action = if let ActionPanelState::Confirmation(ref m_name, _) = action_state {
                                     m_name.clone()
                                 } else {
-                                    "".to_string() // Should not happen in correct flow
+                                    "".to_string()
                                 };
-                                let selected_worker_name = app.get_selected_worker_name(); // Capture this while lock is held
-                                let profile = app.profiles[app.active_profile].clone(); // Clone profile
+                                let selected_worker_name = app.get_selected_worker_name();
+                                let profile = app.profiles[app.active_profile].clone();
                                 let client_token = profile.client_token.clone();
 
                                 // Set initial processing state for UI, then drop lock
@@ -125,34 +158,34 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                                     model_name_for_action.clone(),
                                     match action_state { ActionPanelState::Confirmation(_, action_type) => action_type, _ => ActionType::Pull },
                                     vec!["Initiating action...".to_string()],
-                                    true, // Optimistically true
+                                    true,
                                 );
                                 app.focus = Focus::ActionPanelResponse;
-                                drop(app); // IMPORTANT: Release the MutexGuard here before `tokio::spawn` and any `await` inside it
+                                app.is_action_in_progress = true; // Set flag
+                                drop(app); // Release lock
 
-                                // Clone app_arc for the spawned task, as it moves into the async block
-                                let app_arc_for_spawn = app_arc.clone();
+                                let app_arc_for_spawn = app_arc.clone(); // Clone for spawned task
 
-                                tokio::spawn(async move {
+                                let task_handle = tokio::spawn(async move {
                                     let infer_client = match HiveInferClient::new(
                                         format!("{}:{}", profile.host, profile.port_infer),
                                         &client_token,
                                     ) {
                                         Ok(c) => c,
                                         Err(e) => {
-                                            // Ensure this lock is acquired *after* the client instantiation
-                                            app_arc_for_spawn.lock().await.add_banner(format!("Failed to create InferClient: {}", e));
-                                            app_arc_for_spawn.lock().await.add_action_output_line(format!("Client error: {}", e), false);
-                                            return; // Exit spawned task on client creation failure
+                                            let mut app = app_arc_for_spawn.lock().await;
+                                            app.add_banner(format!("Failed to create InferClient: {}", e));
+                                            app.add_action_output_line(format!("Client error: {}", e), false);
+                                            app.is_action_in_progress = false; // Reset flag on failure
+                                            return;
                                         }
                                     };
 
-                                    let mut api_overall_result_message = Ok("Action completed.".to_string()); // Default success message
+                                    let mut api_overall_result_message: Result<(), String> = Ok(()); // Initialize as Ok(())
 
-                                    // Acquire lock for confirmation_selection, then drop immediately if action takes long
                                     let should_proceed = {
                                         let app_guard = app_arc_for_spawn.lock().await;
-                                        app_guard.confirmation_selection == 0 // 0 means "Yes"
+                                        app_guard.confirmation_selection == 0
                                     };
 
                                     if should_proceed {
@@ -161,14 +194,14 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                                             ActionPanelState::Confirmation(model_name, action_type) => {
                                                 match action_type {
                                                     ActionType::Pull => {
-                                                        match infer_client.pull_model(&model_name, node, app_arc_for_spawn.clone()).await { // Clone for nested call
-                                                            Ok(_) => {}, // pull_model updates UI directly
+                                                        match infer_client.pull_model(&model_name, node, app_arc_for_spawn.clone()).await {
+                                                            Ok(_) => {},
                                                             Err(e) => api_overall_result_message = Err(format!("Pull failed: {}", e)),
                                                         }
                                                     },
                                                     ActionType::Delete => {
-                                                        match infer_client.delete_model(&model_name, node, app_arc_for_spawn.clone()).await { // Clone for nested call
-                                                            Ok(_) => {}, // delete_model updates UI directly
+                                                        match infer_client.delete_model(&model_name, node, app_arc_for_spawn.clone()).await {
+                                                            Ok(_) => {},
                                                             Err(e) => api_overall_result_message = Err(format!("Delete failed: {}", e)),
                                                         }
                                                     },
@@ -176,90 +209,113 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                                             },
                                             _ => api_overall_result_message = Err("Unexpected action panel state.".to_string()),
                                         }
-                                    } else { // User selected "No"
+                                    } else {
                                         app_arc_for_spawn.lock().await.add_action_output_line("Action cancelled by user.".to_string(), true);
                                     }
 
-                                    // Final update to the response panel in the App state
-                                    let mut app_in_task = app_arc_for_spawn.lock().await;
-                                    if let ActionPanelState::Response(ref m_name, ref act_type, ref mut lines, ref mut overall_success) = app_in_task.action_panel_state {
+                                    // After the operation (streaming or single call) is done,
+                                    // ensure the overall status is reflected and clean up.
+                                    let mut app = app_arc_for_spawn.lock().await;
+                                    if let ActionPanelState::Response(ref m_name, ref act_type, ref mut lines, ref mut overall_success) = app.action_panel_state {
                                         if api_overall_result_message.is_err() {
                                             *overall_success = false;
-                                            lines.push(format!("Overall API Error: {}", api_overall_result_message.unwrap_err()));
-                                        } else {
-                                            // The streaming functions already add "completed successfully" messages.
-                                            // If you want a final banner for success after stream, add it here:
-                                            // app_in_task.add_banner(format!("{}: {}", m_name, api_overall_result_message.unwrap()));
+                                            lines.push(api_overall_result_message.unwrap_err()); // Push the error message
                                         }
+                                        // Auto-scroll to bottom of logs on completion/final update
+                                        // This is a common UX for streaming logs
+                                        app.action_panel_scroll = lines.len().saturating_sub(
+                                            // Subtract estimated visible height to set scroll to end
+                                            // You'd need to accurately get the height of the response panel
+                                            // For now, let's just make it a large number to ensure it's at the end.
+                                            // A better way is to pass current `inner_area.height` to App during draw
+                                            1 // Minimum height for 1 line to be visible at end
+                                        ) as u16;
                                     }
-                                });
+                                    app.is_action_in_progress = false; // Action is now complete, reset flag
+                                }).abort_handle(); // Get the AbortHandle
+
+                                // Store the AbortHandle so the main loop can cancel it if needed
+                                let mut app = app_arc.lock().await; // Re-acquire lock to store handle
+                                app.action_task_handle = Some(task_handle);
                             },
                             KeyCode::Esc => { // Cancel confirmation
                                 app.action_panel_state = ActionPanelState::None;
-                                app.focus = Focus::ActionsList; // Go back to actions list
-                                app.action_input_model_name.clear(); // Clear input
+                                app.focus = Focus::ActionsList;
+                                app.action_input_model_name.clear();
                                 app.action_input_cursor_position = 0;
+                                app.action_panel_scroll = 0;
                             }
                             _ => {}
                         }
                     },
                     Focus::ActionPanelResponse => {
-                        app.action_panel_state = ActionPanelState::None;
-                        app.focus = Focus::ActionsList; // Return to ActionsList after viewing response
-                        app.action_input_model_name.clear(); // Clear input
-                        app.action_input_cursor_position = 0;
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('w') => on_key_up(&mut app),
+                            KeyCode::Down | KeyCode::Char('s') => on_key_down(&mut app),
+                            KeyCode::Esc => { // ESC can always dismiss a response panel
+                                if let Some(handle) = app.action_task_handle.take() {
+                                    handle.abort(); // Abort if task still running
+                                }
+                                app.is_action_in_progress = false;
+                                app.action_panel_state = ActionPanelState::None;
+                                app.focus = Focus::ActionsList;
+                                app.action_input_model_name.clear();
+                                app.action_input_cursor_position = 0;
+                                app.action_panel_scroll = 0;
+                                app.add_banner("Response dismissed, action aborted if running.");
+                            },
+                            _ => { // Any other key also dismisses
+                                if let Some(handle) = app.action_task_handle.take() {
+                                    handle.abort(); // Abort if task still running
+                                }
+                                app.is_action_in_progress = false;
+                                app.action_panel_state = ActionPanelState::None;
+                                app.focus = Focus::ActionsList;
+                                app.action_input_model_name.clear();
+                                app.action_input_cursor_position = 0;
+                                app.action_panel_scroll = 0;
+                                app.add_banner("Response dismissed, action aborted if running.");
+                            }
+                        }
                     }
                     _ => {}
                 }
             },
             Event::Tick => {
-                match tab {
+                // Polling logic remains the same
+                match current_tab {
                     Tab::Queues => {
-                        if let Ok(resp) = client.get_queue().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.queue_map = Some(resp)
-                            }
+                        if let Ok(resp) = manage_client.get_queue().await {
+                            let mut app = app_arc.lock().await;
+                            app.queue_map = Some(resp)
                         }
                     }
                     Tab::Nodes | Tab::Dashboard => {
-                        if let Ok(resp) = client.get_worker_status().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.worker_statuses = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_worker_status().await {
+                            let mut app = app_arc.lock().await;
+                            app.worker_statuses = Some(resp);
                         }
-                        if let Ok(resp) = client.get_worker_connections().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.worker_connections = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_worker_connections().await {
+                            let mut app = app_arc.lock().await;
+                            app.worker_connections = Some(resp);
                         }
-                        if let Ok(resp) = client.get_worker_pings().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.worker_pings = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_worker_pings().await {
+                            let mut app = app_arc.lock().await;
+                            app.worker_pings = Some(resp);
                         }
-                        if let Ok(resp) = client.get_worker_versions().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.worker_versions = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_worker_versions().await {
+                            let mut app = app_arc.lock().await;
+                            app.worker_versions = Some(resp);
                         }
-                        if let Ok(resp) = client.get_worker_tags().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.worker_tags = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_worker_tags().await {
+                            let mut app = app_arc.lock().await;
+                            app.worker_tags = Some(resp);
                         }
                     }
                     Tab::Keys => {
-                        if let Ok(resp) = client.get_keys().await {
-                            {
-                                let mut app = app_arc.lock().await;
-                                app.auth_keys = Some(resp);
-                            }
+                        if let Ok(resp) = manage_client.get_keys().await {
+                            let mut app = app_arc.lock().await;
+                            app.auth_keys = Some(resp);
                         }
                     }
                     _ => {}
@@ -269,6 +325,7 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
         }
     }
 }
+
 
 fn on_key_down(app: &mut tokio::sync::MutexGuard<'_, App>) {
     app.focus_down();

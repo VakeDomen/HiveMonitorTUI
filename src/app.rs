@@ -1,3 +1,5 @@
+use tokio::task::AbortHandle;
+
 // src/app.rs
 use crate::config::Profile;
 use crate::models::*;
@@ -84,7 +86,10 @@ pub struct App {
     pub confirmation_selection: usize, // 0 for Yes, 1 for No
     pub action_input_model_name: String, // NEW: For typing the model name
     pub action_input_cursor_position: usize, // NEW: Cursor position for input
-    
+    pub action_panel_scroll: u16, // NEW: For scrolling action panel response
+    pub action_task_handle: Option<AbortHandle>, // NEW: To cancel background action tasks
+    pub is_action_in_progress: bool,
+
     // Cached data for tabs
     pub worker_versions: Option<WorkerVersions>,
     pub worker_statuses: Option<WorkerStatuses>,
@@ -143,7 +148,9 @@ impl App {
             confirmation_selection: 0,
             action_input_model_name: String::new(), // Initialize empty
             action_input_cursor_position: 0,
-           
+            action_panel_scroll: 0, // Initialize scroll to 0
+            action_task_handle: None, // No task running initially
+            is_action_in_progress: false, // Not in progress
         }
     }
 
@@ -187,6 +194,11 @@ impl App {
 
     /// Clear all cached data (e.g. on profile change)
     pub fn clear_caches(&mut self) {
+        if let Some(handle) = self.action_task_handle.take() {
+            handle.abort();
+            self.add_banner("Cancelled active action task.");
+        }
+        self.is_action_in_progress = false; // Ensure flag is reset
         self.worker_versions = None;
         self.worker_statuses = None;
         self.worker_connections = None;
@@ -236,8 +248,13 @@ impl App {
             _ => {}
         }
     }
-
     pub fn focus_right(&mut self) {
+        // Prevent general focus movement if an action is running and we're not in the response view
+        if self.is_action_in_progress && self.focus != Focus::ActionPanelResponse {
+            self.add_banner("Action in progress. Cannot change focus.");
+            return;
+        }
+
         match self.focus {
             Focus::WorkersList => {
                 self.focus = Focus::ActionsList;
@@ -247,32 +264,36 @@ impl App {
                 let selected_action_name = self.worker_actions.get(self.selected_action).copied();
                 match selected_action_name {
                     Some("Pull model") => {
-                         self.action_panel_state = ActionPanelState::PullModel; // Set state
-                         self.focus = Focus::ActionPanelInput; // Move focus to input
-                         // Optionally pre-fill if you have a default/suggested model
-                         self.action_input_model_name.clear(); // Start fresh
+                         self.action_panel_state = ActionPanelState::PullModel;
+                         self.focus = Focus::ActionPanelInput;
+                         self.action_input_model_name.clear();
                          self.action_input_cursor_position = 0;
+                         self.action_panel_scroll = 0; // Reset scroll for new panel
                     },
                     Some("Delete model") => {
-                         self.action_panel_state = ActionPanelState::DeleteModel; // Set state
-                         self.focus = Focus::ActionPanelInput; // Move focus to input
-                         self.action_input_model_name.clear(); // Start fresh
+                         self.action_panel_state = ActionPanelState::DeleteModel;
+                         self.focus = Focus::ActionPanelInput;
+                         self.action_input_model_name.clear();
                          self.action_input_cursor_position = 0;
+                         self.action_panel_scroll = 0; // Reset scroll for new panel
                     },
                     _ => {
                         self.focus = Focus::GlobalView;
                         self.action_panel_state = ActionPanelState::None;
+                        self.action_input_model_name.clear();
+                        self.action_input_cursor_position = 0;
+                        self.action_panel_scroll = 0; // Reset scroll
                     }
                 }
             }
             Focus::GlobalView => {
                 self.focus = Focus::WorkersList;
                 self.action_panel_state = ActionPanelState::None;
-                self.action_input_model_name.clear(); // Clear input if going back to main
+                self.action_input_model_name.clear();
                 self.action_input_cursor_position = 0;
+                self.action_panel_scroll = 0;
             }
             Focus::ActionPanelInput => {
-                // For text input, right arrow moves cursor
                 self.action_input_cursor_position = self.action_input_cursor_position.saturating_add(1)
                     .min(self.action_input_model_name.len());
             }
@@ -282,14 +303,21 @@ impl App {
                 }
             }
             Focus::ActionPanelResponse => {
-                // Any key press would likely dismiss this. For simplicity, just right arrow.
-                self.action_panel_state = ActionPanelState::None;
-                self.focus = Focus::ActionsList; // Return to ActionsList
+                // If an action is still in progress, prevent dismissing with right arrow.
+                // User must use ESC or wait for completion if they want to exit.
+                // Or, if any key dismisses, that's fine too (as currently implemented for `_` in events.rs)
+                // For now, let's allow "any key" to dismiss, so `_` in handle_events is the handler.
             }
         }
     }
 
     pub fn focus_left(&mut self) {
+        // Prevent general focus movement if an action is running and we're not in the response view
+        if self.is_action_in_progress && self.focus != Focus::ActionPanelResponse {
+            self.add_banner("Action in progress. Cannot change focus.");
+            return;
+        }
+
         match self.focus {
             Focus::ActionsList => {
                 self.focus = Focus::WorkersList;
@@ -298,14 +326,14 @@ impl App {
                 self.focus = Focus::ActionsList;
                 self.selected_action = 0;
                 self.action_panel_state = ActionPanelState::None;
-                self.action_input_model_name.clear(); // Clear input if going back
+                self.action_input_model_name.clear();
                 self.action_input_cursor_position = 0;
+                self.action_panel_scroll = 0;
             }
             Focus::WorkersList => {
                 // Stay in WorkersList if already left-most
             }
             Focus::ActionPanelInput => {
-                // For text input, left arrow moves cursor
                 self.action_input_cursor_position = self.action_input_cursor_position.saturating_sub(1);
             }
             Focus::ActionPanelConfirm => {
@@ -314,8 +342,19 @@ impl App {
                 }
             }
             Focus::ActionPanelResponse => {
+                // When in the response view, going left should try to abort the task if running
+                if let Some(handle) = self.action_task_handle.take() {
+                    handle.abort();
+                    self.add_banner("Action task aborted.");
+                }
+                self.is_action_in_progress = false; // Reset flag
+
+                // Then dismiss the panel and return to ActionsList
                 self.action_panel_state = ActionPanelState::None;
-                self.focus = Focus::ActionsList; // Return to ActionsList
+                self.focus = Focus::ActionsList;
+                self.action_input_model_name.clear();
+                self.action_input_cursor_position = 0;
+                self.action_panel_scroll = 0; // Reset scroll
             }
         }
     }
