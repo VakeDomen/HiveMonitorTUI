@@ -1,4 +1,3 @@
-// src/main.rs
 mod utils;
 mod clients;
 mod config;
@@ -8,36 +7,25 @@ mod app;
 mod ui;
 mod events;
 
-use std::collections::HashMap;
-use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use tokio::sync::Mutex;
-use chrono::{DateTime, Utc};
-use serde_json::Value;
-use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
-use crossterm::event::KeyCode;
-use ratatui::backend::CrosstermBackend;
-use ratatui::Terminal;
+use tokio::time::Duration;
 use anyhow::Result;
 
 use crate::app::{App, Tab};
-use crate::clients::infer_client::HiveInferClient;
 use crate::clients::manage_client::HiveManageClient;
 use crate::config::{load_profiles, save_profiles, Profile};
 use crate::errors::ClientError;
 use crate::events::handler::handle_events;
 use crate::events::spawner::{Event, EventSpawner};
-use crate::models::{AuthKeys, GenerateRequest, GenerateResponse, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
 use crate::ui::terminal;
 use crate::ui::tabs;
 
 #[tokio::main]
 async fn main() -> Result<(), ClientError> {
     // Load or initialize profiles
-    let profiles = load_profiles()?;
     let mut profiles = load_profiles()?;
     // If no profiles exist, create one interactively
     if profiles.is_empty() {
@@ -83,7 +71,6 @@ async fn main() -> Result<(), ClientError> {
     }
 
     let mut app = App::new(profiles);
-    let profile = &app.profiles[app.active_profile];
 
     if let Err(e) = init_app_data(&mut app).await {
         println!("[Error] Can't init app data: {:#?}", e);
@@ -92,51 +79,49 @@ async fn main() -> Result<(), ClientError> {
 
 
     let app_arc = Arc::new(Mutex::new(app));
-    let should_stop = Arc::new(AtomicBool::new(false));
+    let should_stop = Arc::new(Mutex::new(false));
 
     
     // Terminal setup
     let mut terminal = terminal::setup_terminal()?;
 
     // Event handling (keyboard + tick)
-    let mut event_spawner = EventSpawner::new(30);
-    event_spawner.add_spawn_interval(Event::Tick, Duration::from_secs(1));
+    let event_spawner = EventSpawner::new()
+        .add_spawn_interval(Event::Tick, Duration::from_secs(5));
 
-
-    event_spawner.push_generate_event(Event::Stop, Duration::from_secs(5));
 
     let app_arc_clone = app_arc.clone();
     let should_stop_clone = should_stop.clone();
     tokio::spawn(async move {
         let _ = handle_events(event_spawner, app_arc_clone).await;
-        should_stop_clone.store(true, Ordering::Relaxed);
+        let mut ss = should_stop_clone.lock().await;
+        *ss = true;
     });
 
-    // Main loop
-    loop {
-        // Draw UI
-        let app = app_arc.lock().await;
-        terminal.draw(|f| {
-            // Render based on current tab
-            match app.current_tab {
-                Tab::Dashboard => tabs::dashboard::draw(f, &app),
-                Tab::Nodes => tabs::nodes::draw(f, &app),
-                Tab::Queues => tabs::queues::draw(f, &app),
-                Tab::Keys => tabs::keys::draw(f, &app),
-                Tab::Console => tabs::console::draw(f, &app),
-                Tab::Logs => tabs::logs::draw(f, &app),
-            }
-            // Render banners and global components
-            ui::terminal::draw_banners(f, &app.banners);
-        })?;
 
-        sleep(Duration::from_millis(16));
-        if should_stop.fetch_and(true, Ordering::Relaxed) {
+    loop {
+
+        {
+            let app = app_arc.lock().await;
+            terminal.draw(|f| {
+                match app.current_tab {
+                    Tab::Dashboard => tabs::dashboard::draw(f, &app),
+                    Tab::Nodes => tabs::nodes::draw(f, &app),
+                    Tab::Queues => tabs::queues::draw(f, &app),
+                    Tab::Keys => tabs::keys::draw(f, &app),
+                    Tab::Console => tabs::console::draw(f, &app),
+                    Tab::Logs => tabs::logs::draw(f, &app),
+                }
+                ui::terminal::draw_banners(f, &app.banners);
+            })?;
+        }
+
+        sleep(Duration::from_millis(50));
+        if *should_stop.lock().await {
             break;
         }
     }
 
-    // Restore terminal
     terminal::restore_terminal()?;
     Ok(())
 }

@@ -23,7 +23,7 @@ impl HttpClient {
         headers.insert(AUTHORIZATION, auth_value);
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(30))
             .build()?;
 
         Ok(HttpClient {

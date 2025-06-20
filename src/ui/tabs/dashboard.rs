@@ -1,3 +1,4 @@
+use rand::{distr::Alphanumeric, Rng};
 use ratatui::{
     backend::Backend, layout::{Alignment, Constraint, Direction, Layout}, style::{Color, Modifier, Style}, widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Sparkline, Table}, Frame
 };
@@ -5,6 +6,7 @@ use crate::app::App;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let size = f.size();
+    
     let outer = Block::default().title("Dashboard").borders(Borders::ALL);
     f.render_widget(outer, size);
 

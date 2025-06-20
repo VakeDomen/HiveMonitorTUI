@@ -1,4 +1,7 @@
+use std::f32::consts::E;
+
 use tokio::sync::mpsc;
+use tokio::task;
 use tokio::time::{self, sleep, Duration, Instant};
 use crossterm::event::{self, Event as CEvent, KeyEvent};
 
@@ -17,42 +20,65 @@ pub struct EventSpawner {
 }
 
 impl EventSpawner {
-    /// Create new Events with given tick interval in seconds
-    pub fn new(key_duration: u64) -> Self {
-        let (tx, rx) = mpsc::channel(100);
-        let input_poll = Duration::from_millis(key_duration);
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(20);
 
-        // spawn input poller
-        tokio::spawn({
-            let tx = tx.clone();
-            async move {
-                loop {
-                    if event::poll(input_poll).unwrap_or(false) {
-                        if let CEvent::Key(key) = event::read().unwrap() {
-                            let _ = tx.send(Event::Input(key)).await;
+        let tx_cloned = tx.clone();
+        tokio::spawn(async move {
+            let mut last_tick = Instant::now();
+            loop {
+                let timeout_duration = Duration::from_millis(200);
+                let crossterm_poll_fut = task::spawn_blocking(move || event::poll(timeout_duration));
+                let tick_sleep_fut = tokio::time::sleep(timeout_duration);
+
+
+                tokio::select! {
+                    poll_result_handle = crossterm_poll_fut => {
+                        match poll_result_handle {
+                            Ok(Ok(true)) => { 
+                                if let Ok(Ok(CEvent::Key(key))) = task::spawn_blocking(event::read).await {
+                                    let _ = tx_cloned.send(Event::Input(key)).await;
+                                } else {
+                                    // eprintln!("Error reading crossterm event or not a KeyEvent");
+                                }
+                            },
+                            Ok(Ok(false)) => {
+                                // eprintln!("Timeout occurred, no event available in the poll duration.");
+                            },
+                            Ok(Err(e)) => {
+                                // eprintln!("Error polling crossterm events: {}", e);
+                            },
+                            Err(e) => {
+                                // eprintln!("Crossterm poll task panicked: {}", e);
+                                break;
+                            }
                         }
-                    }
+                    },
+                    _ = tick_sleep_fut => {
+                        if last_tick.elapsed() >= Duration::from_millis(20) {
+                            let _ = tx_cloned.send(Event::Tick).await;
+                            last_tick = Instant::now();
+                        }
+                    },
                 }
-             }
+            }
         });
         Self { rx , tx }
     }
 
-    /// Receive the next event
     pub async fn next(&mut self) -> Event {
-        self.rx.recv().await.unwrap_or(Event::Tick)
+        self.rx.recv().await.unwrap_or(Event::Stop)
     }
 
-    /// Adjust the tick rate for the producer
-    pub fn add_spawn_interval(&mut self, event: Event, interval_duration: Duration) {
+    pub fn add_spawn_interval(self, event: Event, interval_duration: Duration) -> Self {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let mut interval = time::interval(interval_duration);
             loop {
-                interval.tick().await;
+                sleep(interval_duration).await;
                 let _ = tx.send(event.clone()).await;
             }
         });
+        self
     }
 
     pub fn push_generate_event(&mut self, event: Event, duration: Duration) {

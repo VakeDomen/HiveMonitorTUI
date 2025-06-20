@@ -38,7 +38,7 @@ pub fn parse_auth_keys(raw: Value) -> AuthKeys {
         }
         other => {
             // Unexpected type: try to coerce or just bail to empty
-            eprintln!("WARN unexpected /key payload: {:?}", other);
+            // eprintln!("WARN unexpected /key payload: {:?}", other);
             Vec::new()
         }
     }
