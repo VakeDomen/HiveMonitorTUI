@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
-use crate::app::{App, Focus};
+use crate::app::{ActionPanelState, ActionType, App, Focus};
 
 // --- Color Scheme Definitions ---
 const COLOR_DEFAULT_FG: Color = Color::White;
@@ -22,33 +22,45 @@ const COLOR_STATUS_BAD: Color = Color::Red;    // For "Working" or problematic (
 const COLOR_CATEGORY_TITLE: Color = Color::Yellow;
 
 
-/// Draw the Dashboard tab with focusable regions: WorkersList, ActionsList, GlobalView
 pub fn draw(f: &mut Frame, app: &App) {
     let size = f.size();
-    // Outer block
     let outer = Block::default()
         .title(Span::styled("Hive Monitor", Style::default().fg(COLOR_BORDER)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(COLOR_BORDER));
     f.render_widget(outer, size);
 
-    // Divide into three columns: workers, actions, global
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25), // Workers list
-            Constraint::Percentage(35), // Actions list + info panel
-            Constraint::Percentage(40), // Global view: grid and queues
+            Constraint::Percentage(25),
+            Constraint::Percentage(35),
+            Constraint::Percentage(40),
         ].as_ref())
-        .margin(1) // Margin around the three columns
+        .margin(1)
         .split(size);
 
-    // 1) Workers list
     draw_workers_list(f, cols[0], app);
-    // 2) Actions list + info panel
     draw_actions_panel(f, cols[1], app);
-    // 3) Global view: grid and queues
-    draw_global_view(f, cols[2], app);
+
+    // Conditional rendering for the third column based on action_panel_state and focus
+    match &app.action_panel_state {
+        ActionPanelState::None => {
+            draw_global_view(f, cols[2], app);
+        },
+        ActionPanelState::PullModel => { // This is now the input state
+            draw_action_input_panel(f, cols[2], app, ActionType::Pull);
+        },
+        ActionPanelState::DeleteModel => { // This is now the input state
+            draw_action_input_panel(f, cols[2], app, ActionType::Delete);
+        },
+        ActionPanelState::Confirmation(model_name, action_type) => {
+            draw_model_confirmation_panel(f, cols[2], app, model_name, *action_type);
+        },
+        ActionPanelState::Response(model_name, action_type, result, is_success) => {
+            draw_model_response_panel(f, cols[2], app, model_name, *action_type, result, is_success);
+        }
+    }
 }
 
 fn draw_workers_list(f: &mut Frame, area: Rect, app: &App) {
@@ -194,8 +206,11 @@ fn draw_actions_panel(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(info, parts[1]);
 }
 
+
+
+
+// Helper to draw the main global view (Workers Busy grid and Queues) - unchanged
 fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
-    // Split the global view area vertically into worker grid and queues
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
@@ -204,7 +219,6 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
     let worker_grid_area = chunks[0];
     let queues_area = chunks[1];
 
-    // Worker Grid (Block and internal layout)
     let worker_grid_block = Block::default()
         .title(Span::styled("Workers Busy", Style::default().fg(COLOR_BORDER)))
         .borders(Borders::ALL)
@@ -226,12 +240,11 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                 .block(Block::default().title(Span::styled("Workers Busy", Style::default().fg(COLOR_BORDER))).borders(Borders::ALL).border_style(Style::default().fg(COLOR_BORDER)));
             f.render_widget(p, worker_grid_inner_area);
         } else {
-            // Determine grid dimensions
             let cols = (worker_count as f32).sqrt().ceil() as u16;
             let rows = (worker_count as u16 + cols - 1) / cols;
 
             let row_constraints: Vec<Constraint> = (0..rows)
-                .map(|_| Constraint::Min(3)) // Give each row minimum height for worker name + squares (2 for name, 1 for squares, potentially more for wrapped squares)
+                .map(|_| Constraint::Min(3))
                 .collect();
             let row_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -275,43 +288,33 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                             COLOR_STATUS_GOOD
                         };
 
-                        // --- Draw individual connection squares with wrapping ---
                         if connection_count > 0 {
-                            // Calculate how many squares fit on one line
-                            let square_size = 2; // Each square is 2 chars wide (e.g., "[]")
-                            let gap_size = 1;    // 1 char for space between squares
-                            let effective_square_width = square_size + gap_size; // Total width for a square and its trailing gap
-
-                            // Ensure there's at least 1 char width for the block inner area,
-                            // otherwise, `saturating_sub` could lead to large numbers if `width` is 0.
-                            let available_width_for_squares = inner_cell_area.width.saturating_sub(1); // Account for border/padding if any
+                            let square_size = 2;
+                            let gap_size = 1;
+                            let effective_square_width = square_size + gap_size;
+                            let available_width_for_squares = inner_cell_area.width.saturating_sub(1);
 
                             let max_squares_per_line = if effective_square_width > 0 {
                                 available_width_for_squares / effective_square_width
                             } else {
                                 0
-                            }.max(1); // At least one square if space allows and width > 0
+                            }.max(1);
 
-                            // Calculate required rows for squares
                             let required_square_rows = (connection_count as u16 + max_squares_per_line - 1) / max_squares_per_line;
 
-                            // Create vertical layout for rows of squares
-                            // We need enough height for all rows of squares, plus potential margin.
-                            // Each square row will be 1 char high.
-                            let square_rows_total_height = required_square_rows; // 1 char height per row
-                            let square_vertical_margin = 0; // Margin between title and first row of squares
+                            let square_rows_total_height = required_square_rows;
+                            let square_vertical_margin = 0;
                             let vertical_space_needed = square_rows_total_height + square_vertical_margin;
 
-                            // Ensure there's enough vertical space in the inner cell for squares
                             if inner_cell_area.height >= vertical_space_needed {
                                 let square_render_area = Layout::default()
                                     .direction(Direction::Vertical)
                                     .constraints([
-                                        Constraint::Length(square_vertical_margin), // Top margin
-                                        Constraint::Length(square_rows_total_height), // Space for all square rows
-                                        Constraint::Min(0) // Remaining space
+                                        Constraint::Length(square_vertical_margin),
+                                        Constraint::Length(square_rows_total_height),
+                                        Constraint::Min(0)
                                     ])
-                                    .split(inner_cell_area)[1]; // Take the second chunk (where squares will go)
+                                    .split(inner_cell_area)[1];
 
                                 let actual_square_row_layout = Layout::default()
                                     .direction(Direction::Vertical)
@@ -326,14 +329,13 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                                         let squares_in_this_row = end_idx - start_idx;
 
                                         if squares_in_this_row > 0 {
-                                            // Create horizontal layout for squares in this specific row
                                             let mut h_square_constraints = Vec::new();
                                             for _ in 0..squares_in_this_row {
-                                                h_square_constraints.push(Constraint::Length(square_size)); // Square width
-                                                h_square_constraints.push(Constraint::Length(gap_size));    // Small gap
+                                                h_square_constraints.push(Constraint::Length(square_size));
+                                                h_square_constraints.push(Constraint::Length(gap_size));
                                             }
-                                            h_square_constraints.pop(); // Remove last gap
-                                            h_square_constraints.push(Constraint::Min(0)); // Remaining space
+                                            h_square_constraints.pop();
+                                            h_square_constraints.push(Constraint::Min(0));
 
                                             let h_square_layout = Layout::default()
                                                 .direction(Direction::Horizontal)
@@ -341,7 +343,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                                                 .split(*row_rect_for_squares);
 
                                             for i in 0..squares_in_this_row {
-                                                if let Some(sq_area) = h_square_layout.get(i as usize * 2) { // Get the square area, skipping gaps
+                                                if let Some(sq_area) = h_square_layout.get(i as usize * 2) {
                                                     let square = Block::default().style(Style::default().bg(connection_color));
                                                     f.render_widget(square, *sq_area);
                                                 }
@@ -361,7 +363,6 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(loading, worker_grid_inner_area);
     }
 
-    // Queues Panel
     let queues_block = Block::default()
         .title(Span::styled("Queues", Style::default().fg(COLOR_BORDER)))
         .borders(Borders::ALL)
@@ -370,7 +371,6 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(&queues_block, queues_area);
     let queues_inner_area = queues_block.inner(queues_area);
 
-    // --- Split Queues into Model and Worker side-by-side ---
     let queue_sub_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
@@ -383,19 +383,16 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
     let mut worker_lines: Vec<Line> = Vec::new();
 
     if let Some(queues) = &app.queue_map {
-        // Collect and sort keys for consistent display
         let mut sorted_queue_names: Vec<&String> = queues.keys().collect();
-        sorted_queue_names.sort_unstable(); // Use unstable sort for performance if order doesn't need to be fully stable
+        sorted_queue_names.sort_unstable();
 
         for name in sorted_queue_names {
-            let cnt = queues.get(name).unwrap(); // Should always exist since we got the name from keys()
+            let cnt = queues.get(name).unwrap();
             if name.starts_with("Model:") {
-                model_lines.push(Line::from(format!("{}: {}", name.replace("Model: ", ""), cnt)));
+                model_lines.push(Line::from(format!("{}", name.replace("Model: ", ""))));
             } else if name.starts_with("Node:") {
                 worker_lines.push(Line::from(format!("{}: {}", name.replace("Node: ", ""), cnt)));
             } else {
-                // Fallback for any other unexpected queue types
-                // You might want to handle these differently or log them
                 model_lines.push(Line::from(format!("{}: {}", name, cnt)));
             }
         }
@@ -404,19 +401,235 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
         worker_lines.push(Line::from("No worker queues"));
     }
 
-    // Render Model Queues
     let model_paragraph = Paragraph::new(vec![
         Line::from(Span::styled("MODEL", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
-        Line::from(""), // Add a blank line for spacing
+        Line::from(""),
     ].into_iter().chain(model_lines.into_iter()).collect::<Vec<Line>>())
     .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
     f.render_widget(model_paragraph, model_queues_area);
 
-    // Render Worker Queues
     let worker_paragraph = Paragraph::new(vec![
         Line::from(Span::styled("WORKER", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
-        Line::from(""), // Add a blank line for spacing
+        Line::from(""),
     ].into_iter().chain(worker_lines.into_iter()).collect::<Vec<Line>>())
     .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
     f.render_widget(worker_paragraph, worker_queues_area);
 }
+
+
+// --- New drawing functions for Action Panel ---
+
+fn draw_action_input_panel(f: &mut Frame, area: Rect, app: &App, action_type: ActionType) {
+    let action_verb = match action_type {
+        ActionType::Pull => "Pull",
+        ActionType::Delete => "Delete",
+    };
+    let title = format!("{} Model", action_verb);
+
+    let block = Block::default()
+        .title(Span::styled(&title, Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(&block, area);
+
+    let inner_area = block.inner(area);
+
+    let main_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Prompt "Model Name:"
+            Constraint::Length(3), // Input box (with borders)
+            Constraint::Min(0),    // Spacer
+            Constraint::Length(1), // Instructions
+            Constraint::Length(1), // ESC instruction
+        ].as_ref())
+        .margin(1) // Inner margin
+        .split(inner_area);
+
+    let prompt_area = main_layout[0];
+    let input_area = main_layout[1];
+    let instructions_area = main_layout[3];
+    let esc_instruction_area = main_layout[4];
+
+    // Prompt text
+    f.render_widget(Paragraph::new(format!("{} Model Name:", action_verb))
+        .style(Style::default().fg(COLOR_DEFAULT_FG)), prompt_area);
+
+    // Input box
+    let input_block = Block::default().borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.focus == Focus::ActionPanelInput { COLOR_HIGHLIGHT_BG } else { COLOR_BORDER }));
+    let input_paragraph = Paragraph::new(app.action_input_model_name.as_str())
+        .style(Style::default().fg(COLOR_DEFAULT_FG))
+        .block(input_block);
+
+    f.render_widget(input_paragraph, input_area);
+
+    // Set cursor position if focused
+    if app.focus == Focus::ActionPanelInput {
+        f.set_cursor(
+            input_area.x + 1 + app.action_input_cursor_position as u16,
+            input_area.y + 1,
+        );
+    }
+
+    // Instructions
+    f.render_widget(Paragraph::new(Line::from("Type model name, press ENTER to confirm."))
+        .style(Style::default().fg(Color::DarkGray)), instructions_area);
+    f.render_widget(Paragraph::new(Line::from("Press ESC to cancel."))
+        .style(Style::default().fg(Color::DarkGray)), esc_instruction_area);
+}
+
+fn draw_model_confirmation_panel(f: &mut Frame, area: Rect, app: &App, model_name: &str, action_type: ActionType) {
+    let action_verb = match action_type {
+        ActionType::Pull => "pull",
+        ActionType::Delete => "delete",
+    };
+    let title = format!("Confirm {} Model", action_verb);
+
+    let block = Block::default()
+        .title(Span::styled(&title, Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(&block, area);
+
+    let inner_area = block.inner(area);
+
+    let text = vec![
+        Line::from(format!("Are you sure you want to {} model:", action_verb)),
+        Line::from(Span::styled(format!("  {}", model_name), Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow))),
+        Line::from(""),
+    ];
+
+    let confirmation_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(text.len() as u16), // Height for the text
+            Constraint::Min(0), // Spacer
+            Constraint::Length(3), // Height for Yes/No buttons (including borders)
+            Constraint::Length(1), // Height for instruction
+        ].as_ref())
+        .margin(1) // Margin around the whole confirmation content
+        .split(inner_area);
+
+    let text_area = confirmation_layout[0];
+    let buttons_area = confirmation_layout[2];
+    let instruction_area = confirmation_layout[3];
+
+    f.render_widget(Paragraph::new(text).alignment(ratatui::layout::Alignment::Center), text_area);
+
+    // Render Yes/No buttons side-by-side
+    let button_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Yes
+            Constraint::Percentage(50), // No
+        ].as_ref())
+        .split(buttons_area);
+
+    let yes_style = if app.focus == Focus::ActionPanelConfirm && app.confirmation_selection == 0 {
+        Style::default().fg(COLOR_HIGHLIGHT_FG).bg(COLOR_HIGHLIGHT_BG)
+    } else {
+        Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)
+    };
+    let no_style = if app.focus == Focus::ActionPanelConfirm && app.confirmation_selection == 1 {
+        Style::default().fg(COLOR_HIGHLIGHT_FG).bg(COLOR_HIGHLIGHT_BG)
+    } else {
+        Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)
+    };
+
+    let yes_button = Paragraph::new(Span::styled("  [ Yes ]  ", yes_style))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).border_style(yes_style));
+    let no_button = Paragraph::new(Span::styled("  [ No ]   ", no_style))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).border_style(no_style));
+
+    f.render_widget(yes_button, button_chunks[0]);
+    f.render_widget(no_button, button_chunks[1]);
+
+    f.render_widget(Paragraph::new(Line::from("Use LEFT/RIGHT to select, ENTER to confirm")).alignment(ratatui::layout::Alignment::Center).style(Style::default().fg(Color::DarkGray)), instruction_area);
+}
+
+
+// Modified draw_model_response_panel to display streaming output
+fn draw_model_response_panel(f: &mut Frame, area: Rect, app: &App, model_name: &str, action_type: ActionType, output_lines: &Vec<String>, is_overall_success: &bool) {
+    let action_verb = match action_type {
+        ActionType::Pull => "Pull",
+        ActionType::Delete => "Delete",
+    };
+    let title = format!("{} Model Result", action_verb);
+
+    let block_style = if *is_overall_success {
+        Style::default().fg(COLOR_STATUS_GOOD).bg(COLOR_DEFAULT_BG) // Green for overall success
+    } else {
+        Style::default().fg(COLOR_STATUS_BAD).bg(COLOR_DEFAULT_BG) // Red for overall failure
+    };
+
+    let block = Block::default()
+        .title(Span::styled(&title, Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(block_style); // Apply block style based on overall success/failure
+    f.render_widget(&block, area);
+
+    let inner_area = block.inner(area);
+
+    let mut lines = vec![
+        Line::from(format!("{}: {}", action_verb, model_name)),
+        Line::from(""),
+    ];
+
+    // Add all output lines
+    for line_text in output_lines {
+        // You might want more sophisticated parsing here to color error lines differently
+        // For now, it just displays them as they come.
+        lines.push(Line::from(line_text.clone()));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Press any key to dismiss", Style::default().fg(Color::DarkGray))));
+
+    // Use a List widget for scrollable output if it gets long
+    let output_list_items: Vec<ListItem> = lines.into_iter().map(ListItem::new).collect();
+    let output_list = List::new(output_list_items)
+        .block(Block::default()) // No extra borders, already in outer block
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)); // Use default style for content
+    
+    // If you need scrolling, you'd manage ListState and pass it.
+    // For now, it just displays all lines.
+    f.render_widget(output_list, inner_area);
+}
+
+// --- New drawing functions for Action Panel ---
+
+fn draw_model_action_panel(f: &mut Frame, area: Rect, app: &App, model_name: &str, action_type: ActionType) {
+    let action_title = match action_type {
+        ActionType::Pull => "Pull Model",
+        ActionType::Delete => "Delete Model",
+    };
+
+    let block = Block::default()
+        .title(Span::styled(action_title, Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(&block, area);
+
+    let inner_area = block.inner(area);
+
+    let lines = vec![
+        Line::from(format!("Action: {}", action_title)),
+        Line::from(format!("Model: {}", model_name)),
+        Line::from(""),
+        Line::from("Press ENTER to confirm."),
+        Line::from("Press ESC to cancel."), // Add ESC for cancellation
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(paragraph, inner_area);
+}
+

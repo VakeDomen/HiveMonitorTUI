@@ -1,4 +1,4 @@
-use std::{error::Error as StdError, fmt, io::Error};
+use std::{error::Error as StdError, fmt, io::Error, string::FromUtf8Error};
 use reqwest;
 use serde_json;
 use toml;
@@ -17,6 +17,7 @@ pub enum ClientError {
     Toml(toml::de::Error),
     /// I/O error (e.g., reading config)
     Io(std::io::Error),
+    Decode(FromUtf8Error),
 }
 
 impl fmt::Display for ClientError {
@@ -27,7 +28,8 @@ impl fmt::Display for ClientError {
             ClientError::Json(e) => write!(f, "JSON error: {}", e),
             ClientError::Toml(e) => write!(f, "TOML error: {}", e),
             ClientError::Io(e) => write!(f, "I/O error: {}", e),
-        }
+            ClientError::Decode(e) => write!(f, "Decoding error: {}", e),
+                    }
     }
 }
 
@@ -39,7 +41,8 @@ impl StdError for ClientError {
             ClientError::Json(e) => Some(e),
             ClientError::Toml(e) => Some(e),
             ClientError::Io(e) => Some(e),
-        }
+            ClientError::Decode(e) => Some(e),
+                    }
     }
 }
 

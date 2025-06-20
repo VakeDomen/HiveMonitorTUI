@@ -7,7 +7,26 @@ pub enum Focus {
     WorkersList,
     ActionsList,
     GlobalView,
+    ActionPanelInput,
+    ActionPanelConfirm,
+    ActionPanelResponse,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionPanelState {
+    None,
+    PullModel, // No longer needs model name in variant, it's in app.action_input_model_name
+    DeleteModel, // Same
+    Confirmation(String, ActionType), // Model name to confirm
+    Response(String, ActionType, Vec<String>, bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionType {
+    Pull,
+    Delete,
+}
+
 
 /// Application tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +78,13 @@ pub struct App {
     pub worker_actions: Vec<&'static str>,
     /// Index of the selected action when focus == ActionsList
     pub selected_action: usize,
-
+    
+    
+    pub action_panel_state: ActionPanelState,
+    pub confirmation_selection: usize, // 0 for Yes, 1 for No
+    pub action_input_model_name: String, // NEW: For typing the model name
+    pub action_input_cursor_position: usize, // NEW: Cursor position for input
+    
     // Cached data for tabs
     pub worker_versions: Option<WorkerVersions>,
     pub worker_statuses: Option<WorkerStatuses>,
@@ -112,8 +137,13 @@ impl App {
             console_output: Vec::new(),
             focus: Focus::WorkersList,
             selected_worker: 0,
-            worker_actions: vec!["List models", "Pull model", "Delete model"],
+            worker_actions: vec!["Pull model", "Delete model"],
             selected_action: 0,
+            action_panel_state: ActionPanelState::None,
+            confirmation_selection: 0,
+            action_input_model_name: String::new(), // Initialize empty
+            action_input_cursor_position: 0,
+           
         }
     }
 
@@ -167,11 +197,10 @@ impl App {
         self.generate_response = None;
         self.console_output.clear();
         self.console_input.clear();
+        self.action_panel_state = ActionPanelState::None;
+        self.confirmation_selection = 0;
     }
 
-
-
-    /// Move focus and selection upwards
     pub fn focus_up(&mut self) {
         match self.focus {
             Focus::WorkersList => {
@@ -184,21 +213,22 @@ impl App {
                     self.selected_action -= 1;
                 }
             }
+            // For action panel, Up/Down would likely not be used for horizontal Yes/No
+            // or text input, but rather Left/Right.
             _ => {}
         }
     }
 
-    /// Move focus and selection downwards
     pub fn focus_down(&mut self) {
         match self.focus {
             Focus::WorkersList => {
-                let max = /* number of selectable workers minus 1, e.g. */ self.workers_len() - 1;
+                let max = self.workers_len().saturating_sub(1);
                 if self.selected_worker < max {
                     self.selected_worker += 1;
                 }
             }
             Focus::ActionsList => {
-                let max = self.worker_actions.len() - 1;
+                let max = self.worker_actions.len().saturating_sub(1);
                 if self.selected_action < max {
                     self.selected_action += 1;
                 }
@@ -207,22 +237,116 @@ impl App {
         }
     }
 
-    /// Move focus region right (Workers -> Actions -> Global)
     pub fn focus_right(&mut self) {
-        self.focus = match self.focus {
-            Focus::WorkersList => Focus::ActionsList,
-            Focus::ActionsList => Focus::ActionsList,
-            Focus::GlobalView => Focus::WorkersList,
-        };
+        match self.focus {
+            Focus::WorkersList => {
+                self.focus = Focus::ActionsList;
+                self.selected_action = 0;
+            }
+            Focus::ActionsList => {
+                let selected_action_name = self.worker_actions.get(self.selected_action).copied();
+                match selected_action_name {
+                    Some("Pull model") => {
+                         self.action_panel_state = ActionPanelState::PullModel; // Set state
+                         self.focus = Focus::ActionPanelInput; // Move focus to input
+                         // Optionally pre-fill if you have a default/suggested model
+                         self.action_input_model_name.clear(); // Start fresh
+                         self.action_input_cursor_position = 0;
+                    },
+                    Some("Delete model") => {
+                         self.action_panel_state = ActionPanelState::DeleteModel; // Set state
+                         self.focus = Focus::ActionPanelInput; // Move focus to input
+                         self.action_input_model_name.clear(); // Start fresh
+                         self.action_input_cursor_position = 0;
+                    },
+                    _ => {
+                        self.focus = Focus::GlobalView;
+                        self.action_panel_state = ActionPanelState::None;
+                    }
+                }
+            }
+            Focus::GlobalView => {
+                self.focus = Focus::WorkersList;
+                self.action_panel_state = ActionPanelState::None;
+                self.action_input_model_name.clear(); // Clear input if going back to main
+                self.action_input_cursor_position = 0;
+            }
+            Focus::ActionPanelInput => {
+                // For text input, right arrow moves cursor
+                self.action_input_cursor_position = self.action_input_cursor_position.saturating_add(1)
+                    .min(self.action_input_model_name.len());
+            }
+            Focus::ActionPanelConfirm => {
+                if self.confirmation_selection == 0 {
+                    self.confirmation_selection = 1;
+                }
+            }
+            Focus::ActionPanelResponse => {
+                // Any key press would likely dismiss this. For simplicity, just right arrow.
+                self.action_panel_state = ActionPanelState::None;
+                self.focus = Focus::ActionsList; // Return to ActionsList
+            }
+        }
     }
 
-    /// Move focus region left
     pub fn focus_left(&mut self) {
-        self.focus = match self.focus {
-            Focus::ActionsList => Focus::WorkersList,
-            Focus::GlobalView  => Focus::ActionsList,
-            Focus::WorkersList => Focus::WorkersList,
-        };
+        match self.focus {
+            Focus::ActionsList => {
+                self.focus = Focus::WorkersList;
+            }
+            Focus::GlobalView => {
+                self.focus = Focus::ActionsList;
+                self.selected_action = 0;
+                self.action_panel_state = ActionPanelState::None;
+                self.action_input_model_name.clear(); // Clear input if going back
+                self.action_input_cursor_position = 0;
+            }
+            Focus::WorkersList => {
+                // Stay in WorkersList if already left-most
+            }
+            Focus::ActionPanelInput => {
+                // For text input, left arrow moves cursor
+                self.action_input_cursor_position = self.action_input_cursor_position.saturating_sub(1);
+            }
+            Focus::ActionPanelConfirm => {
+                if self.confirmation_selection == 1 {
+                    self.confirmation_selection = 0;
+                }
+            }
+            Focus::ActionPanelResponse => {
+                self.action_panel_state = ActionPanelState::None;
+                self.focus = Focus::ActionsList; // Return to ActionsList
+            }
+        }
+    }
+
+    // Helper for char input into action panel
+    pub fn input_char_into_action_field(&mut self, c: char) {
+        if self.action_input_cursor_position >= self.action_input_model_name.len() {
+            self.action_input_model_name.push(c);
+        } else {
+            self.action_input_model_name.insert(self.action_input_cursor_position, c);
+        }
+        self.action_input_cursor_position += 1;
+    }
+
+    // Helper for backspace in action panel
+    pub fn backspace_action_field(&mut self) {
+        if self.action_input_cursor_position > 0 {
+            self.action_input_model_name.remove(self.action_input_cursor_position - 1);
+            self.action_input_cursor_position -= 1;
+        }
+    }
+    pub fn add_action_output_line(&mut self, line: String, is_success: bool) {
+        match &mut self.action_panel_state {
+            ActionPanelState::Response(_, _, ref mut output_lines, ref mut current_is_success) => {
+                output_lines.push(line);
+                *current_is_success = is_success; // Update overall status based on latest line
+            },
+            _ => {
+                eprintln!("Attempted to add action output line when not in Response state!");
+            }
+        }
     }
 
     /// Helper: number of selectable workers (excluding unauthenticated)
@@ -230,6 +354,23 @@ impl App {
         self.worker_statuses.as_ref()
             .map(|map| map.len())
             .unwrap_or(0)
+    }
+
+    pub fn get_selected_info_panel_model(&self) -> Option<String> {
+        let worker_name = self.get_selected_worker_name()?;
+        self.worker_tags.as_ref()
+            .and_then(|tags_map| tags_map.get(&worker_name))
+            .and_then(|worker_models| worker_models.first().cloned()) // Take the first model
+    }
+
+    pub fn get_selected_worker_name(&self) -> Option<String> {
+        self.worker_statuses.as_ref()
+            .map(|map| {
+                let mut names: Vec<_> = map.keys().filter(|&n| n != "Unauthenticated").cloned().collect();
+                names.sort();
+                names.get(self.selected_worker).cloned()
+            })
+            .flatten()
     }
 
 }

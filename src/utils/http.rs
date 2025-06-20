@@ -63,4 +63,21 @@ impl HttpClient {
         let data = res.json::<T>().await?;
         Ok(data)
     }
+
+    pub async fn delete<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ClientError> {
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let res = self.client
+            .delete(&url)
+            .headers(self.headers.clone())
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        let data = res.json::<T>().await?;
+        Ok(data)
+    }
 }
