@@ -211,7 +211,7 @@ impl App {
     pub fn focus_right(&mut self) {
         self.focus = match self.focus {
             Focus::WorkersList => Focus::ActionsList,
-            Focus::ActionsList => Focus::GlobalView,
+            Focus::ActionsList => Focus::ActionsList,
             Focus::GlobalView => Focus::WorkersList,
         };
     }
