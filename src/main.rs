@@ -15,9 +15,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::app::{App, Tab};
+use crate::clients::infer_client::HiveInferClient;
 use crate::clients::manage_client::HiveManageClient;
-use crate::config::load_profiles;
-use crate::models::{AuthKeys, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
+use crate::config::{load_profiles, save_profiles, Profile};
+use crate::models::{AuthKeys, GenerateRequest, GenerateResponse, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
 use crate::ui::events::{Event, Events};
 use crate::ui::terminal;
 use crate::ui::tabs;
@@ -26,6 +27,50 @@ use crate::ui::tabs;
 async fn main() -> Result<(), Box<dyn Error>> {
     // Load or initialize profiles
     let profiles = load_profiles()?;
+    let mut profiles = load_profiles()?;
+    // If no profiles exist, create one interactively
+    if profiles.is_empty() {
+        use std::io::{stdin, stdout, Write};
+        println!("No HiveCore profiles found. Let's create one.");
+        let mut input = String::new();
+
+        // Profile name
+        print!("Profile name: "); stdout().flush().unwrap();
+        stdin().read_line(&mut input).unwrap();
+        let name = input.trim().to_string();
+
+        // Host
+        print!("HiveCore host (e.g. https://hive.example.com): ");
+        stdout().flush().unwrap();
+        input.clear(); stdin().read_line(&mut input).unwrap();
+        let host = input.trim().to_string();
+
+        // Inference port
+        print!("Inference port [6666]: "); stdout().flush().unwrap();
+        input.clear(); stdin().read_line(&mut input).unwrap();
+        let port_infer = input.trim().parse().unwrap_or(6666);
+
+        // Management port
+        print!("Management port [6668]: "); stdout().flush().unwrap();
+        input.clear(); stdin().read_line(&mut input).unwrap();
+        let port_manage = input.trim().parse().unwrap_or(6668);
+
+        // Client token
+        print!("Client token: "); stdout().flush().unwrap();
+        input.clear(); stdin().read_line(&mut input).unwrap();
+        let client_token = input.trim().to_string();
+
+        // Admin token
+        print!("Admin token: "); stdout().flush().unwrap();
+        input.clear(); stdin().read_line(&mut input).unwrap();
+        let admin_token = input.trim().to_string();
+
+        let new_profile = Profile { name, host, port_infer, port_manage, client_token, admin_token };
+        // Save to disk
+        save_profiles(&[new_profile.clone()])?;
+        profiles = vec![new_profile];
+    }
+
     let mut app = App::new(profiles);
     let profile = &app.profiles[app.active_profile];
     let mut manage_client = HiveManageClient::new(
@@ -58,26 +103,54 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // Handle input or tick
         match events.next().await {
-            Event::Input(key) => {
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Left => app.prev_tab(),
-                    KeyCode::Right => app.next_tab(),
-                    KeyCode::Char('r') => {
-                        // Trigger manual refresh: clear caches to force reload
-                        app.clear_caches();
+            Event::Input(key) => match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Left     => app.prev_tab(),
+                KeyCode::Right    => app.next_tab(),
+                KeyCode::Char('r')=> app.clear_caches(),
+                KeyCode::Enter    => {
+                    if app.current_tab == Tab::Console {
+                        // build the infer client
+                        let profile = &app.profiles[app.active_profile];
+                        let api = HiveInferClient::new(
+                            format!("{}:{}", profile.host, profile.port_infer),
+                            &profile.client_token,
+                        )?;
+                        // pick a model (e.g. first in queue_map) or hardcode
+                        let model = app.queue_map
+                            .as_ref()
+                            .and_then(|qm| qm.keys().next().cloned())
+                            .unwrap_or_default();
+                        let req = GenerateRequest {
+                            model: model.clone(),
+                            prompt: app.console_input.clone(),
+                            stream: false,
+                            node: None,
+                        };
+                        // run it
+                        match api.generate(&req.model, &req.prompt, None, req.stream).await {
+                            Ok(raw) => {
+                                if let Ok(resp) = serde_json::from_value::<GenerateResponse>(raw) {
+                                    app.generate_response = Some(resp.clone());
+                                    app.console_output = vec![resp.result];
+                                }
+                            }
+                            Err(e) => app.add_banner(format!("Inference failed: {}", e)),
+                        }
                     }
-                    KeyCode::Char('+') => {
-                        app.intervals.general_secs = (app.intervals.general_secs + 1).min(60);
-                        events.set_tick_rate(app.intervals.general_secs);
-                    }
-                    KeyCode::Char('-') => {
-                        app.intervals.general_secs = (app.intervals.general_secs.saturating_sub(1)).max(1);
-                        events.set_tick_rate(app.intervals.general_secs);
-                    }
-                    _ => {}
                 }
-            }
+                KeyCode::Char(c)   => {
+                    if app.current_tab == Tab::Console {
+                        app.console_input.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if app.current_tab == Tab::Console {
+                        app.console_input.pop();
+                    }
+                }
+                _ => {}
+            },
             Event::Tick => {
                 // Instantiate client each tick to pick up profile changes
                 let profile = &app.profiles[app.active_profile];

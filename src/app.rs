@@ -31,6 +31,8 @@ impl Tab {
 pub struct App {
     /// Loaded user profiles
     pub profiles: Vec<Profile>,
+    /// Buffer for console prompt input
+    pub console_input: String,
     /// Index of the currently active profile
     pub active_profile: usize,
     /// Currently selected UI tab
@@ -75,6 +77,7 @@ impl App {
         let active_profile = if profiles.is_empty() { 0 } else { 0 };
         App {
             profiles,
+            console_input: String::new(),
             active_profile,
             current_tab: Tab::Dashboard,
             banners: Vec::new(),
@@ -140,5 +143,6 @@ impl App {
         self.auth_keys = None;
         self.generate_response = None;
         self.console_output.clear();
+        self.console_input.clear();
     }
 }
