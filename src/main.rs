@@ -15,7 +15,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::app::{App, Tab};
+use crate::clients::manage_client::HiveManageClient;
 use crate::config::load_profiles;
+use crate::models::{AuthKeys, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
 use crate::ui::events::{Event, Events};
 use crate::ui::terminal;
 use crate::ui::tabs;
@@ -25,6 +27,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load or initialize profiles
     let profiles = load_profiles()?;
     let mut app = App::new(profiles);
+    let profile = &app.profiles[app.active_profile];
+    let mut manage_client = HiveManageClient::new(
+        format!("{}:{}", profile.host, profile.port_manage),
+        &profile.admin_token,
+    )?;
 
     // Terminal setup
     let mut terminal = terminal::setup_terminal()?;
@@ -72,17 +79,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             Event::Tick => {
-                // On tick, fetch data for current tab
-                // Spawn asynchronous tasks based on active tab
+                // Instantiate client each tick to pick up profile changes
+                let profile = &app.profiles[app.active_profile];
+                let mut client = HiveManageClient::new(
+                    format!("{}:{}", profile.host, profile.port_manage),
+                    &profile.admin_token,
+                )?;
+
                 match app.current_tab {
                     Tab::Queues => {
-                        // poll queue data at high frequency
-                        // TODO: spawn task to update app.queue_map
+                        if let Ok(raw) = client.get_queue().await {
+                            match serde_json::from_value::<QueueMap>(raw) {
+                                Ok(map)    => app.queue_map = Some(map),
+                                Err(e)     => app.add_banner(format!("Parse queue failed: {}", e)),
+                            }
+                        }
                     }
-                    _ => {
-                        // poll general data (nodes, keys, dashboard)
-                        // TODO: spawn tasks to update relevant app fields
+                    Tab::Nodes => {
+                        // fetch node details
+                        if let Ok(raw) = client.get_worker_status().await {
+                            if let Ok(parsed) = serde_json::from_value::<WorkerStatuses>(raw) {
+                                app.worker_statuses = Some(parsed);
+                            }
+                        }
+                        if let Ok(raw) = client.get_worker_connections().await {
+                            if let Ok(parsed) = serde_json::from_value::<WorkerConnections>(raw) {
+                                app.worker_connections = Some(parsed);
+                            }
+                        }
+                        if let Ok(raw) = client.get_worker_pings().await {
+                            if let Ok(parsed) = serde_json::from_value::<WorkerPings>(raw) {
+                                app.worker_pings = Some(parsed);
+                            }
+                        }
+                        if let Ok(raw) = client.get_worker_versions().await {
+                            if let Ok(parsed) = serde_json::from_value::<WorkerVersions>(raw) {
+                                app.worker_versions = Some(parsed);
+                            }
+                        }
+                        if let Ok(raw) = client.get_worker_tags().await {
+                            if let Ok(parsed) = serde_json::from_value::<WorkerTags>(raw) {
+                                app.worker_tags = Some(parsed);
+                            }
+                        }
                     }
+                    Tab::Keys => {
+                        if let Ok(raw) = client.get_keys().await {
+                            if let Ok(parsed) = serde_json::from_value::<AuthKeys>(raw) {
+                                app.auth_keys = Some(parsed);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
