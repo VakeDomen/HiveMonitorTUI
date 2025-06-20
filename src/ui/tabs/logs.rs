@@ -21,11 +21,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Build list items from pings and connections
     let mut items: Vec<ListItem> = Vec::new();
     if let Some(pings) = &app.worker_pings {
-        for (name, dt) in pings {
-            let line = format!("Ping [{}]: {}", name, dt.to_rfc3339());
-            items.push(ListItem::new(line));
+        for (name, times) in pings {
+            if let Some(latest) = times.last() {
+                let line = format!("Ping [{}]: {}", name, latest.to_rfc3339());
+                items.push(ListItem::new(line));
+            }
         }
     }
+    
     if let Some(conns) = &app.worker_connections {
         for (name, cnt) in conns {
             let line = format!("Conns [{}]: {}", name, cnt);

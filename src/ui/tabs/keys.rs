@@ -27,12 +27,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
         // build rows
         let rows: Vec<Row> = keys.iter().map(|k| {
-            let created = k.created_at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string();
             Row::new(vec![
                 Cell::from(k.id.clone()),
                 Cell::from(k.name.clone()),
                 Cell::from(k.role.clone()),
-                Cell::from(created),
+                Cell::from(k.value.clone()),
             ])
         }).collect();
 

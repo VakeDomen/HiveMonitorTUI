@@ -7,24 +7,29 @@ mod models;
 mod app;
 mod ui;
 
+use std::collections::HashMap;
 use std::error::Error;
+use chrono::{DateTime, Utc};
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use crossterm::event::KeyCode;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use anyhow::Result;
 
 use crate::app::{App, Tab};
 use crate::clients::infer_client::HiveInferClient;
 use crate::clients::manage_client::HiveManageClient;
 use crate::config::{load_profiles, save_profiles, Profile};
+use crate::errors::ClientError;
 use crate::models::{AuthKeys, GenerateRequest, GenerateResponse, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
 use crate::ui::events::{Event, Events};
 use crate::ui::terminal;
 use crate::ui::tabs;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), ClientError> {
     // Load or initialize profiles
     let profiles = load_profiles()?;
     let mut profiles = load_profiles()?;
@@ -78,6 +83,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &profile.admin_token,
     )?;
 
+    if let Err(e) = init_app_data(&mut app).await {
+        println!("[Error] Can't init app data: {:#?}", e);
+        return Err(e);
+    }
+
+    println!("{:#?}", app);
+
+    
     // Terminal setup
     let mut terminal = terminal::setup_terminal()?;
 
@@ -161,46 +174,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 match app.current_tab {
                     Tab::Queues => {
-                        if let Ok(raw) = client.get_queue().await {
-                            match serde_json::from_value::<QueueMap>(raw) {
-                                Ok(map)    => app.queue_map = Some(map),
-                                Err(e)     => app.add_banner(format!("Parse queue failed: {}", e)),
-                            }
+                        if let Ok(resp) = client.get_queue().await {
+                            app.queue_map = Some(resp)
                         }
                     }
                     Tab::Nodes => {
                         // fetch node details
-                        if let Ok(raw) = client.get_worker_status().await {
-                            if let Ok(parsed) = serde_json::from_value::<WorkerStatuses>(raw) {
-                                app.worker_statuses = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_worker_status().await {
+                            app.worker_statuses = Some(resp);
                         }
-                        if let Ok(raw) = client.get_worker_connections().await {
-                            if let Ok(parsed) = serde_json::from_value::<WorkerConnections>(raw) {
-                                app.worker_connections = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_worker_connections().await {
+                            app.worker_connections = Some(resp);
                         }
-                        if let Ok(raw) = client.get_worker_pings().await {
-                            if let Ok(parsed) = serde_json::from_value::<WorkerPings>(raw) {
-                                app.worker_pings = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_worker_pings().await {
+                            app.worker_pings = Some(resp);
                         }
-                        if let Ok(raw) = client.get_worker_versions().await {
-                            if let Ok(parsed) = serde_json::from_value::<WorkerVersions>(raw) {
-                                app.worker_versions = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_worker_versions().await {
+                            app.worker_versions = Some(resp);
                         }
-                        if let Ok(raw) = client.get_worker_tags().await {
-                            if let Ok(parsed) = serde_json::from_value::<WorkerTags>(raw) {
-                                app.worker_tags = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_worker_tags().await {
+                            app.worker_tags = Some(resp);
                         }
                     }
                     Tab::Keys => {
-                        if let Ok(raw) = client.get_keys().await {
-                            if let Ok(parsed) = serde_json::from_value::<AuthKeys>(raw) {
-                                app.auth_keys = Some(parsed);
-                            }
+                        if let Ok(resp) = client.get_keys().await {
+                            app.auth_keys = Some(resp);
                         }
                     }
                     _ => {}
@@ -211,5 +209,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Restore terminal
     terminal::restore_terminal()?;
+    Ok(())
+}
+
+async fn init_app_data(app: &mut App) -> Result<(), ClientError> {
+    let client = HiveManageClient::new(
+        format!("{}:{}", 
+            app.profiles[app.active_profile].host, 
+            app.profiles[app.active_profile].port_manage
+        ),
+        &app.profiles[app.active_profile].admin_token,
+    )?;
+    app.worker_statuses = Some(client.get_worker_status().await?);
+    app.worker_connections = Some(client.get_worker_connections().await?);
+    app.worker_pings = Some(client.get_worker_pings().await?);
+    app.worker_versions = Some(client.get_worker_versions().await?);
+    app.worker_tags = Some(client.get_worker_tags().await?);
+    app.queue_map = Some(client.get_queue().await?);
+    app.auth_keys = Some(client.get_keys().await?);
     Ok(())
 }

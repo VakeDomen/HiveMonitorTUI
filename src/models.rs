@@ -1,3 +1,5 @@
+use clap::builder::Str;
+// src/models.rs
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -10,22 +12,14 @@ pub struct WorkerVersion {
 }
 pub type WorkerVersions = HashMap<String, WorkerVersion>;
 
-// Status returned by /worker/status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeStatus {
-    Verified,
-    Waiting,
-    #[serde(other)]
-    Unknown,
-}
-pub type WorkerStatuses = HashMap<String, NodeStatus>;
+// Status returned by /worker/status: array of status strings per worker
+pub type WorkerStatuses = HashMap<String, Vec<String>>;
 
 // Connections returned by /worker/connections
 pub type WorkerConnections = HashMap<String, usize>;
 
-// Pings returned by /worker/pings
-pub type WorkerPings = HashMap<String, DateTime<Utc>>;
+// Pings returned by /worker/pings: array of RFC3339 timestamps per worker
+pub type WorkerPings = HashMap<String, Vec<DateTime<Utc>>>;
 
 // Supported tags per worker
 pub type WorkerTags = HashMap<String, Vec<String>>;
@@ -39,8 +33,7 @@ pub struct AuthKey {
     pub id: String,
     pub name: String,
     pub role: String,
-    #[serde(with = "chrono::serde::ts_seconds")]  
-    pub created_at: DateTime<Utc>,
+    pub value: String,
 }
 pub type AuthKeys = Vec<AuthKey>;
 

@@ -28,6 +28,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             let status = statuses.get(*name).map(|s| format!("{:?}", s)).unwrap_or_default();
             let conn = conns.get(*name).unwrap_or(&0).to_string();
             let ping = pings.get(*name)
+                .and_then(|times| times.last())
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_else(|| "-".into());
             let vers = versions.get(*name)

@@ -28,6 +28,7 @@ impl Tab {
 }
 
 /// Holds the shared application state
+#[derive(Debug)]
 pub struct App {
     /// Loaded user profiles
     pub profiles: Vec<Profile>,
@@ -55,6 +56,7 @@ pub struct App {
 }
 
 /// Configurable polling intervals
+#[derive(Debug)]
 pub struct Intervals {
     /// High-frequency interval for queues (0.5s)
     pub queue_secs: f32,
