@@ -6,9 +6,14 @@ mod errors;
 mod models;
 mod app;
 mod ui;
+mod events;
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::sleep;
+use tokio::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -23,8 +28,9 @@ use crate::clients::infer_client::HiveInferClient;
 use crate::clients::manage_client::HiveManageClient;
 use crate::config::{load_profiles, save_profiles, Profile};
 use crate::errors::ClientError;
+use crate::events::handler::handle_events;
+use crate::events::spawner::{Event, EventSpawner};
 use crate::models::{AuthKeys, GenerateRequest, GenerateResponse, QueueMap, WorkerConnections, WorkerPings, WorkerStatuses, WorkerTags, WorkerVersions};
-use crate::ui::events::{Event, Events};
 use crate::ui::terminal;
 use crate::ui::tabs;
 
@@ -78,28 +84,38 @@ async fn main() -> Result<(), ClientError> {
 
     let mut app = App::new(profiles);
     let profile = &app.profiles[app.active_profile];
-    let mut manage_client = HiveManageClient::new(
-        format!("{}:{}", profile.host, profile.port_manage),
-        &profile.admin_token,
-    )?;
 
     if let Err(e) = init_app_data(&mut app).await {
         println!("[Error] Can't init app data: {:#?}", e);
         return Err(e);
     }
 
-    println!("{:#?}", app);
+
+    let app_arc = Arc::new(Mutex::new(app));
+    let should_stop = Arc::new(AtomicBool::new(false));
 
     
     // Terminal setup
     let mut terminal = terminal::setup_terminal()?;
 
     // Event handling (keyboard + tick)
-    let mut events = Events::new(app.intervals.general_secs);
+    let mut event_spawner = EventSpawner::new(30);
+    event_spawner.add_spawn_interval(Event::Tick, Duration::from_secs(1));
+
+
+    event_spawner.push_generate_event(Event::Stop, Duration::from_secs(5));
+
+    let app_arc_clone = app_arc.clone();
+    let should_stop_clone = should_stop.clone();
+    tokio::spawn(async move {
+        let _ = handle_events(event_spawner, app_arc_clone).await;
+        should_stop_clone.store(true, Ordering::Relaxed);
+    });
 
     // Main loop
     loop {
         // Draw UI
+        let app = app_arc.lock().await;
         terminal.draw(|f| {
             // Render based on current tab
             match app.current_tab {
@@ -114,96 +130,9 @@ async fn main() -> Result<(), ClientError> {
             ui::terminal::draw_banners(f, &app.banners);
         })?;
 
-        // Handle input or tick
-        match events.next().await {
-            Event::Input(key) => match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Left     => app.prev_tab(),
-                KeyCode::Right    => app.next_tab(),
-                KeyCode::Char('r')=> app.clear_caches(),
-                KeyCode::Enter    => {
-                    if app.current_tab == Tab::Console {
-                        // build the infer client
-                        let profile = &app.profiles[app.active_profile];
-                        let api = HiveInferClient::new(
-                            format!("{}:{}", profile.host, profile.port_infer),
-                            &profile.client_token,
-                        )?;
-                        // pick a model (e.g. first in queue_map) or hardcode
-                        let model = app.queue_map
-                            .as_ref()
-                            .and_then(|qm| qm.keys().next().cloned())
-                            .unwrap_or_default();
-                        let req = GenerateRequest {
-                            model: model.clone(),
-                            prompt: app.console_input.clone(),
-                            stream: false,
-                            node: None,
-                        };
-                        // run it
-                        match api.generate(&req.model, &req.prompt, None, req.stream).await {
-                            Ok(raw) => {
-                                if let Ok(resp) = serde_json::from_value::<GenerateResponse>(raw) {
-                                    app.generate_response = Some(resp.clone());
-                                    app.console_output = vec![resp.result];
-                                }
-                            }
-                            Err(e) => app.add_banner(format!("Inference failed: {}", e)),
-                        }
-                    }
-                }
-                KeyCode::Char(c)   => {
-                    if app.current_tab == Tab::Console {
-                        app.console_input.push(c);
-                    }
-                }
-                KeyCode::Backspace => {
-                    if app.current_tab == Tab::Console {
-                        app.console_input.pop();
-                    }
-                }
-                _ => {}
-            },
-            Event::Tick => {
-                // Instantiate client each tick to pick up profile changes
-                let profile = &app.profiles[app.active_profile];
-                let mut client = HiveManageClient::new(
-                    format!("{}:{}", profile.host, profile.port_manage),
-                    &profile.admin_token,
-                )?;
-
-                match app.current_tab {
-                    Tab::Queues => {
-                        if let Ok(resp) = client.get_queue().await {
-                            app.queue_map = Some(resp)
-                        }
-                    }
-                    Tab::Nodes => {
-                        // fetch node details
-                        if let Ok(resp) = client.get_worker_status().await {
-                            app.worker_statuses = Some(resp);
-                        }
-                        if let Ok(resp) = client.get_worker_connections().await {
-                            app.worker_connections = Some(resp);
-                        }
-                        if let Ok(resp) = client.get_worker_pings().await {
-                            app.worker_pings = Some(resp);
-                        }
-                        if let Ok(resp) = client.get_worker_versions().await {
-                            app.worker_versions = Some(resp);
-                        }
-                        if let Ok(resp) = client.get_worker_tags().await {
-                            app.worker_tags = Some(resp);
-                        }
-                    }
-                    Tab::Keys => {
-                        if let Ok(resp) = client.get_keys().await {
-                            app.auth_keys = Some(resp);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        sleep(Duration::from_millis(16));
+        if should_stop.fetch_and(true, Ordering::Relaxed) {
+            break;
         }
     }
 
