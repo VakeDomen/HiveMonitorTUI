@@ -2,6 +2,13 @@
 use crate::config::Profile;
 use crate::models::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    WorkersList,
+    ActionsList,
+    GlobalView,
+}
+
 /// Application tabs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -42,6 +49,16 @@ pub struct App {
     pub banners: Vec<String>,
     /// Polling intervals (in seconds)
     pub intervals: Intervals,
+
+    /// Focus region within the Dashboard/Nodes view
+    pub focus: Focus,
+
+    /// Index of the currently selected worker (in workers list)
+    pub selected_worker: usize,
+    /// Available actions for the selected worker
+    pub worker_actions: Vec<&'static str>,
+    /// Index of the selected action when focus == ActionsList
+    pub selected_action: usize,
 
     // Cached data for tabs
     pub worker_versions: Option<WorkerVersions>,
@@ -93,6 +110,10 @@ impl App {
             auth_keys: None,
             generate_response: None,
             console_output: Vec::new(),
+            focus: Focus::WorkersList,
+            selected_worker: 0,
+            worker_actions: vec!["List models", "Pull model", "Delete model"],
+            selected_action: 0,
         }
     }
 
@@ -147,4 +168,68 @@ impl App {
         self.console_output.clear();
         self.console_input.clear();
     }
+
+
+
+    /// Move focus and selection upwards
+    pub fn focus_up(&mut self) {
+        match self.focus {
+            Focus::WorkersList => {
+                if self.selected_worker > 0 {
+                    self.selected_worker -= 1;
+                }
+            }
+            Focus::ActionsList => {
+                if self.selected_action > 0 {
+                    self.selected_action -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move focus and selection downwards
+    pub fn focus_down(&mut self) {
+        match self.focus {
+            Focus::WorkersList => {
+                let max = /* number of selectable workers minus 1, e.g. */ self.workers_len() - 1;
+                if self.selected_worker < max {
+                    self.selected_worker += 1;
+                }
+            }
+            Focus::ActionsList => {
+                let max = self.worker_actions.len() - 1;
+                if self.selected_action < max {
+                    self.selected_action += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move focus region right (Workers -> Actions -> Global)
+    pub fn focus_right(&mut self) {
+        self.focus = match self.focus {
+            Focus::WorkersList => Focus::ActionsList,
+            Focus::ActionsList => Focus::GlobalView,
+            Focus::GlobalView => Focus::WorkersList,
+        };
+    }
+
+    /// Move focus region left
+    pub fn focus_left(&mut self) {
+        self.focus = match self.focus {
+            Focus::ActionsList => Focus::WorkersList,
+            Focus::GlobalView  => Focus::ActionsList,
+            Focus::WorkersList => Focus::WorkersList,
+        };
+    }
+
+    /// Helper: number of selectable workers (excluding unauthenticated)
+    pub fn workers_len(&self) -> usize {
+        self.worker_statuses.as_ref()
+            .map(|map| map.len())
+            .unwrap_or(0)
+    }
+
 }

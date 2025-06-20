@@ -24,22 +24,23 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
 
         client
     };
-    let mut c = 0;
 
-    let tab = {
-        let mut app = app_arc.lock().await;
-        app.add_banner(format!("{c}"));
-        app.current_tab.clone()
-    };
     loop {
+
+        let tab = {
+            let app = app_arc.lock().await;
+            app.current_tab.clone()
+        };
 
         match event_spawner.next().await {
             Event::Input(key) => {
                 let mut app = app_arc.lock().await;
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Left     => on_key_left(&mut app),
-                    KeyCode::Right    => on_key_right(&mut app),
+                    KeyCode::Left | KeyCode::Char('a')    => on_key_left(&mut app),
+                    KeyCode::Right | KeyCode::Char('d')    => on_key_right(&mut app),
+                    KeyCode::Up | KeyCode::Char('w') => on_key_up(&mut app),
+                    KeyCode::Down | KeyCode::Char('s') => on_key_down(&mut app),
                     KeyCode::Char('r')=> on_key_r(&mut app),
                     KeyCode::Enter    => on_enter(&mut app).await,
                     KeyCode::Backspace => on_backspace(app),
@@ -105,6 +106,14 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
     }
 }
 
+fn on_key_down(app: &mut tokio::sync::MutexGuard<'_, App>) {
+    app.focus_down();
+}
+
+fn on_key_up(app: &mut tokio::sync::MutexGuard<'_, App>) {
+    app.focus_up();
+}
+
 fn on_backspace(mut app: tokio::sync::MutexGuard<'_, App>) {
     if app.current_tab == Tab::Console {
         app.console_input.pop();
@@ -122,11 +131,11 @@ fn on_key_r(app: &mut tokio::sync::MutexGuard<'_, App>) {
 }
 
 fn on_key_right(app: &mut tokio::sync::MutexGuard<'_, App>) {
-    app.next_tab()
+    app.focus_right();
 }
 
 fn on_key_left(app: &mut tokio::sync::MutexGuard<'_, App>) {
-    app.prev_tab()
+    app.focus_left();
 }
 
 async fn on_enter(app: &mut tokio::sync::MutexGuard<'_, App>) {

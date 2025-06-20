@@ -1,121 +1,422 @@
-use rand::{distr::Alphanumeric, Rng};
+// src/ui/tabs/dashboard.rs
 use ratatui::{
-    backend::Backend, layout::{Alignment, Constraint, Direction, Layout}, style::{Color, Modifier, Style}, widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Sparkline, Table}, Frame
+    backend::Backend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
-use crate::app::App;
+use crate::app::{App, Focus};
 
+// --- Color Scheme Definitions ---
+const COLOR_DEFAULT_FG: Color = Color::White;
+const COLOR_DEFAULT_BG: Color = Color::Black;
+const COLOR_BORDER: Color = Color::Cyan;
+const COLOR_HIGHLIGHT_BG: Color = Color::LightCyan;
+const COLOR_HIGHLIGHT_FG: Color = Color::Black;
+const COLOR_SELECTED_INACTIVE_FOCUS_BG: Color = Color::DarkGray; // For selected worker when focus is on actions
+const COLOR_SELECTED_INACTIVE_FOCUS_FG: Color = Color::LightCyan;
+const COLOR_STATUS_GOOD: Color = Color::Green; // For "Polling" or active connections (Green in diagram)
+const COLOR_STATUS_BAD: Color = Color::Red;    // For "Working" or problematic (Red in diagram)
+const COLOR_CATEGORY_TITLE: Color = Color::Yellow;
+
+
+/// Draw the Dashboard tab with focusable regions: WorkersList, ActionsList, GlobalView
 pub fn draw(f: &mut Frame, app: &App) {
     let size = f.size();
-    
-    let outer = Block::default().title("Dashboard").borders(Borders::ALL);
+    // Outer block
+    let outer = Block::default()
+        .title(Span::styled("Hive Monitor", Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER));
     f.render_widget(outer, size);
 
-    // Reserve top 6 lines for gauges & info, rest for worker grid
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
+    // Divide into three columns: workers, actions, global
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(3), // gauges
-            Constraint::Length(3), // info
-            Constraint::Min(0),    // grid
+            Constraint::Percentage(25), // Workers list
+            Constraint::Percentage(35), // Actions list + info panel
+            Constraint::Percentage(40), // Global view: grid and queues
         ].as_ref())
-        .margin(1)
+        .margin(1) // Margin around the three columns
         .split(size);
 
-    // --- Row 1: Gauges ---
-    let gauge_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-        .split(sections[0]);
+    // 1) Workers list
+    draw_workers_list(f, cols[0], app);
+    // 2) Actions list + info panel
+    draw_actions_panel(f, cols[1], app);
+    // 3) Global view: grid and queues
+    draw_global_view(f, cols[2], app);
+}
 
-    let total_nodes = app.worker_statuses.as_ref().map(|m| m.len()).unwrap_or(0) as u16;
-    let g1 = Gauge::default()
-        .block(Block::default().title("Nodes").borders(Borders::ALL))
-        .gauge_style(Style::default().fg(Color::Green))
-        .ratio((total_nodes.min(100)) as f64 / 100.0)
-        .label(format!("{}", total_nodes));
-    f.render_widget(g1, gauge_cols[0]);
+fn draw_workers_list(f: &mut Frame, area: Rect, app: &App) {
+    let mut items = Vec::new();
 
-    let total_queued = app.queue_map.as_ref().map(|q| q.values().sum::<usize>() as u16).unwrap_or(0);
-    let g2 = Gauge::default()
-        .block(Block::default().title("Queued").borders(Borders::ALL))
-        .gauge_style(Style::default().fg(Color::Yellow))
-        .ratio((total_queued.min(100)) as f64 / 100.0)
-        .label(format!("{}", total_queued));
-    f.render_widget(g2, gauge_cols[1]);
+    if let Some(statuses) = &app.worker_statuses {
+        let mut names: Vec<_> = statuses.keys().filter(|&n| n != "Unauthenticated").cloned().collect();
+        names.sort();
 
-    // --- Row 2: Info panels ---
-    let info_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-        .split(sections[1]);
-
-    let total_keys = app.auth_keys.as_ref().map(|k| k.len()).unwrap_or(0);
-    let p3 = Paragraph::new(format!("{} keys", total_keys))
-        .block(Block::default().title("Auth Keys").borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(p3, info_cols[0]);
-
-    let avg_ping = app.worker_pings.as_ref().map(|map| {
-        let sum: i64 = map.values()
-            .filter_map(|times| times.last().map(|dt| dt.timestamp_millis()))
-            .sum();
-        let cnt = map.len() as i64;
-        if cnt>0 { sum/cnt } else { 0 }
-    }).unwrap_or(0);
-    let p4 = Paragraph::new(format!("{} ms", avg_ping))
-        .block(Block::default().title("Avg Ping").borders(Borders::ALL))
-        .style(Style::default().fg(Color::Magenta))
-        .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(p4, info_cols[1]);
-
-    // --- Row 3: Worker grid ---
-    let binding = std::collections::HashMap::new();
-    let statuses = app.worker_statuses.as_ref().unwrap_or(&binding);
-    let count = statuses.len().max(1);
-    let cols = (count as f32).sqrt().ceil() as usize;
-    let rows = ((count + cols - 1) / cols) as usize;
-
-    // build a Vec<Constraint> for the row heights
-    let mut row_constraints = Vec::with_capacity(rows);
-    for _ in 0..rows {
-        row_constraints.push(Constraint::Ratio(1, rows as u32));
+        for (i, name) in names.iter().enumerate() {
+            let conns = app.worker_connections
+                .as_ref()
+                .and_then(|m| m.get(name))
+                .copied()
+                .unwrap_or(0);
+            let label = format!("{} ({})", name, conns);
+            let style = if app.focus == Focus::WorkersList && i == app.selected_worker {
+                Style::default().fg(COLOR_HIGHLIGHT_FG).bg(COLOR_HIGHLIGHT_BG)
+            } else if (app.focus == Focus::ActionsList || app.focus == Focus::GlobalView) && i == app.selected_worker {
+                Style::default().fg(COLOR_SELECTED_INACTIVE_FOCUS_FG).bg(COLOR_SELECTED_INACTIVE_FOCUS_BG)
+            }
+            else {
+                Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)
+            };
+            items.push(ListItem::new(label).style(style));
+        }
     }
 
-    let grid_rows = Layout::default()
+    if let Some(cnt) = app.worker_connections.as_ref().and_then(|m| m.get("Unauthenticated")).copied() {
+        items.push(ListItem::new(format!("Unauthenticated ({})", cnt)).style(Style::default().fg(Color::DarkGray)));
+    }
+
+    let block_title = Span::styled("Workers", Style::default().fg(COLOR_BORDER));
+    let block_style = Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG);
+    let block = Block::default()
+        .title(block_title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(block_style);
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+fn draw_actions_panel(f: &mut Frame, area: Rect, app: &App) {
+    let parts = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(row_constraints)
-        .split(sections[2]);
+        .constraints([Constraint::Length(app.worker_actions.len() as u16 + 2), Constraint::Min(0)].as_ref())
+        .split(area);
 
-    let mut names: Vec<_> = statuses.keys().cloned().collect();
-    names.sort();
+    // Actions list
+    let mut items = Vec::new();
+    for (i, act) in app.worker_actions.iter().enumerate() {
+        let style = if app.focus == Focus::ActionsList && i == app.selected_action {
+            Style::default().fg(COLOR_HIGHLIGHT_FG).bg(COLOR_HIGHLIGHT_BG)
+        } else {
+            Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)
+        };
+        items.push(ListItem::new(Span::raw(*act)).style(style));
+    }
+    let actions_block = Block::default()
+        .title(Span::styled("Worker Actions", Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    let actions = List::new(items).block(actions_block);
+    f.render_widget(actions, parts[0]);
 
-    for (r, row_area) in grid_rows.into_iter().enumerate() {
-        // build a Vec<Constraint> for the column widths
-        let mut col_constraints = Vec::with_capacity(cols);
-        for _ in 0..cols {
-            col_constraints.push(Constraint::Ratio(1, cols as u32));
+    // Info panel for selected worker
+    let mut info_block_title = "Info".to_string(); // Default title if no worker selected or loading
+
+    let info = if let Some(statuses) = &app.worker_statuses {
+        let mut names: Vec<_> = statuses.keys().filter(|&n| n != "Unauthenticated").cloned().collect();
+        names.sort();
+
+        if let Some(name) = names.get(app.selected_worker) {
+            info_block_title = format!("Info: {}", name);
+            let mut lines: Vec<Line> = Vec::new();
+
+            lines.push(Line::from(Span::styled("Versions:", Style::default().add_modifier(Modifier::BOLD))));
+            if let Some(vs) = &app.worker_versions {
+                if let Some(v) = vs.get(name) {
+                    lines.push(Line::from(format!("  Hive: {}", v.hive)));
+                    lines.push(Line::from(format!("  Ollama: {}", v.ollama)));
+                } else {
+                    lines.push(Line::from("  No version info"));
+                }
+            } else {
+                lines.push(Line::from("  Loading versions..."));
+            }
+
+            lines.push(Line::from(Span::styled("Last Ping:", Style::default().add_modifier(Modifier::BOLD))));
+            if let Some(pings) = &app.worker_pings {
+                if let Some(times) = pings.get(name) {
+                    if let Some(latest) = times.last() {
+                        lines.push(Line::from(format!("  {}", latest.to_rfc3339())));
+                    } else {
+                        lines.push(Line::from("  No ping data"));
+                    }
+                } else {
+                    lines.push(Line::from("  No ping data for worker"));
+                }
+            } else {
+                lines.push(Line::from("  Loading pings..."));
+            }
+
+            lines.push(Line::from(Span::styled("Models:", Style::default().add_modifier(Modifier::BOLD))));
+            if let Some(tags) = &app.worker_tags {
+                if let Some(worker_models) = tags.get(name) {
+                    if worker_models.is_empty() {
+                         lines.push(Line::from("  No models loaded"));
+                    } else {
+                        for model_name in worker_models {
+                            lines.push(Line::from(format!("  - {}", model_name)));
+                        }
+                    }
+                } else {
+                    lines.push(Line::from("  No model tags for worker"));
+                }
+            } else {
+                lines.push(Line::from("  Loading models..."));
+            }
+
+            Paragraph::new(lines).block(Block::default()
+                .title(Span::styled(&info_block_title, Style::default().fg(COLOR_BORDER)))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_BORDER))
+                .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)))
+        } else {
+            Paragraph::new("No worker selected (or data loading)").block(Block::default()
+                .title(Span::styled(&info_block_title, Style::default().fg(COLOR_BORDER)))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(COLOR_BORDER))
+                .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)))
         }
+    } else {
+        Paragraph::new("Loading worker statuses...").block(Block::default()
+            .title(Span::styled(&info_block_title, Style::default().fg(COLOR_BORDER)))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(COLOR_BORDER))
+            .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG)))
+    };
+    f.render_widget(info, parts[1]);
+}
 
-        let grid_cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(col_constraints)
-            .split(*row_area);
+fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
+    // Split the global view area vertically into worker grid and queues
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+        .split(area);
 
-        // for each cell in this row
-        for c in 0..cols {
-            if let Some(worker) = names.get(r * cols + c) {
-                let last = statuses.get(worker)
-                                .and_then(|v| v.last())
-                                .map(String::as_str)
-                                .unwrap_or("");
-                let color = if last == "Polling" { Color::Green } else { Color::Red };
-                let cell = Block::default()
-                    .title(worker.as_str())
-                    .borders(Borders::ALL)
-                    .style(Style::default().bg(color));
-                f.render_widget(cell, grid_cols[c]);
+    let worker_grid_area = chunks[0];
+    let queues_area = chunks[1];
+
+    // Worker Grid (Block and internal layout)
+    let worker_grid_block = Block::default()
+        .title(Span::styled("Workers Busy", Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(&worker_grid_block, worker_grid_area);
+    let worker_grid_inner_area = worker_grid_block.inner(worker_grid_area);
+
+    if let Some(statuses) = &app.worker_statuses {
+        let mut names: Vec<_> = statuses.keys()
+            .filter(|&n| n != "Unauthenticated")
+            .cloned()
+            .collect();
+        names.sort();
+
+        let worker_count = names.len();
+        if worker_count == 0 {
+            let p = Paragraph::new("No workers online.")
+                .block(Block::default().title(Span::styled("Workers Busy", Style::default().fg(COLOR_BORDER))).borders(Borders::ALL).border_style(Style::default().fg(COLOR_BORDER)));
+            f.render_widget(p, worker_grid_inner_area);
+        } else {
+            // Determine grid dimensions
+            let cols = (worker_count as f32).sqrt().ceil() as u16;
+            let rows = (worker_count as u16 + cols - 1) / cols;
+
+            let row_constraints: Vec<Constraint> = (0..rows)
+                .map(|_| Constraint::Min(3)) // Give each row minimum height for worker name + squares (2 for name, 1 for squares, potentially more for wrapped squares)
+                .collect();
+            let row_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(row_constraints)
+                .split(worker_grid_inner_area);
+
+            for (r_idx, row_rect) in row_layout.into_iter().enumerate() {
+                let col_constraints: Vec<Constraint> = (0..cols)
+                    .map(|_| Constraint::Ratio(1, cols as u32))
+                    .collect();
+                let col_layout = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(col_constraints)
+                    .split(*row_rect);
+
+                for (c_idx, cell_area) in col_layout.into_iter().enumerate() {
+                    let idx = r_idx as usize * cols as usize + c_idx as usize;
+                    if let Some(name) = names.get(idx) {
+                        let worker_block = Block::default()
+                            .title(name.as_str())
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(COLOR_BORDER));
+                        f.render_widget(&worker_block, *cell_area);
+
+                        let inner_cell_area = worker_block.inner(*cell_area);
+
+                        let connection_count = app.worker_connections
+                            .as_ref()
+                            .and_then(|m| m.get(name))
+                            .copied()
+                            .unwrap_or(0);
+
+                        let worker_status = statuses.get(name)
+                            .and_then(|v| v.last())
+                            .map(String::as_str)
+                            .unwrap_or("Unknown");
+
+                        let connection_color = if worker_status == "Working" {
+                            COLOR_STATUS_BAD
+                        } else {
+                            COLOR_STATUS_GOOD
+                        };
+
+                        // --- Draw individual connection squares with wrapping ---
+                        if connection_count > 0 {
+                            // Calculate how many squares fit on one line
+                            let square_size = 2; // Each square is 2 chars wide (e.g., "[]")
+                            let gap_size = 1;    // 1 char for space between squares
+                            let effective_square_width = square_size + gap_size; // Total width for a square and its trailing gap
+
+                            // Ensure there's at least 1 char width for the block inner area,
+                            // otherwise, `saturating_sub` could lead to large numbers if `width` is 0.
+                            let available_width_for_squares = inner_cell_area.width.saturating_sub(1); // Account for border/padding if any
+
+                            let max_squares_per_line = if effective_square_width > 0 {
+                                available_width_for_squares / effective_square_width
+                            } else {
+                                0
+                            }.max(1); // At least one square if space allows and width > 0
+
+                            // Calculate required rows for squares
+                            let required_square_rows = (connection_count as u16 + max_squares_per_line - 1) / max_squares_per_line;
+
+                            // Create vertical layout for rows of squares
+                            // We need enough height for all rows of squares, plus potential margin.
+                            // Each square row will be 1 char high.
+                            let square_rows_total_height = required_square_rows; // 1 char height per row
+                            let square_vertical_margin = 0; // Margin between title and first row of squares
+                            let vertical_space_needed = square_rows_total_height + square_vertical_margin;
+
+                            // Ensure there's enough vertical space in the inner cell for squares
+                            if inner_cell_area.height >= vertical_space_needed {
+                                let square_render_area = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([
+                                        Constraint::Length(square_vertical_margin), // Top margin
+                                        Constraint::Length(square_rows_total_height), // Space for all square rows
+                                        Constraint::Min(0) // Remaining space
+                                    ])
+                                    .split(inner_cell_area)[1]; // Take the second chunk (where squares will go)
+
+                                let actual_square_row_layout = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints((0..required_square_rows).map(|_| Constraint::Length(1)).collect::<Vec<Constraint>>())
+                                    .split(square_render_area);
+
+
+                                for row_num in 0..required_square_rows {
+                                    if let Some(row_rect_for_squares) = actual_square_row_layout.get(row_num as usize) {
+                                        let start_idx = row_num * max_squares_per_line as u16;
+                                        let end_idx = (start_idx + max_squares_per_line).min(connection_count as u16);
+                                        let squares_in_this_row = end_idx - start_idx;
+
+                                        if squares_in_this_row > 0 {
+                                            // Create horizontal layout for squares in this specific row
+                                            let mut h_square_constraints = Vec::new();
+                                            for _ in 0..squares_in_this_row {
+                                                h_square_constraints.push(Constraint::Length(square_size)); // Square width
+                                                h_square_constraints.push(Constraint::Length(gap_size));    // Small gap
+                                            }
+                                            h_square_constraints.pop(); // Remove last gap
+                                            h_square_constraints.push(Constraint::Min(0)); // Remaining space
+
+                                            let h_square_layout = Layout::default()
+                                                .direction(Direction::Horizontal)
+                                                .constraints(h_square_constraints)
+                                                .split(*row_rect_for_squares);
+
+                                            for i in 0..squares_in_this_row {
+                                                if let Some(sq_area) = h_square_layout.get(i as usize * 2) { // Get the square area, skipping gaps
+                                                    let square = Block::default().style(Style::default().bg(connection_color));
+                                                    f.render_widget(square, *sq_area);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+    } else {
+        let loading = Paragraph::new("Loading worker statuses...")
+            .block(Block::default().title(Span::styled("Workers Busy", Style::default().fg(COLOR_BORDER))).borders(Borders::ALL).border_style(Style::default().fg(COLOR_BORDER)));
+        f.render_widget(loading, worker_grid_inner_area);
     }
+
+    // Queues Panel
+    let queues_block = Block::default()
+        .title(Span::styled("Queues", Style::default().fg(COLOR_BORDER)))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(COLOR_BORDER))
+        .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(&queues_block, queues_area);
+    let queues_inner_area = queues_block.inner(queues_area);
+
+    // --- Split Queues into Model and Worker side-by-side ---
+    let queue_sub_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(queues_inner_area);
+
+    let model_queues_area = queue_sub_chunks[0];
+    let worker_queues_area = queue_sub_chunks[1];
+
+    let mut model_lines: Vec<Line> = Vec::new();
+    let mut worker_lines: Vec<Line> = Vec::new();
+
+    if let Some(queues) = &app.queue_map {
+        // Collect and sort keys for consistent display
+        let mut sorted_queue_names: Vec<&String> = queues.keys().collect();
+        sorted_queue_names.sort_unstable(); // Use unstable sort for performance if order doesn't need to be fully stable
+
+        for name in sorted_queue_names {
+            let cnt = queues.get(name).unwrap(); // Should always exist since we got the name from keys()
+            if name.starts_with("Model:") {
+                model_lines.push(Line::from(format!("{}: {}", name.replace("Model: ", ""), cnt)));
+            } else if name.starts_with("Node:") {
+                worker_lines.push(Line::from(format!("{}: {}", name.replace("Node: ", ""), cnt)));
+            } else {
+                // Fallback for any other unexpected queue types
+                // You might want to handle these differently or log them
+                model_lines.push(Line::from(format!("{}: {}", name, cnt)));
+            }
+        }
+    } else {
+        model_lines.push(Line::from("No model queues"));
+        worker_lines.push(Line::from("No worker queues"));
+    }
+
+    // Render Model Queues
+    let model_paragraph = Paragraph::new(vec![
+        Line::from(Span::styled("MODEL", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
+        Line::from(""), // Add a blank line for spacing
+    ].into_iter().chain(model_lines.into_iter()).collect::<Vec<Line>>())
+    .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(model_paragraph, model_queues_area);
+
+    // Render Worker Queues
+    let worker_paragraph = Paragraph::new(vec![
+        Line::from(Span::styled("WORKER", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
+        Line::from(""), // Add a blank line for spacing
+    ].into_iter().chain(worker_lines.into_iter()).collect::<Vec<Line>>())
+    .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
+    f.render_widget(worker_paragraph, worker_queues_area);
 }
