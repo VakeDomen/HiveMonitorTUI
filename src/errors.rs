@@ -42,7 +42,7 @@ impl StdError for ClientError {
             ClientError::Toml(e) => Some(e),
             ClientError::Io(e) => Some(e),
             ClientError::Decode(e) => Some(e),
-                    }
+        }
     }
 }
 
