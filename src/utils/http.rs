@@ -1,12 +1,12 @@
-use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION}};
+use reqwest::{header::{HeaderMap, HeaderValue, AUTHORIZATION}, Client, Response};
 use std::time::Duration;
 use crate::errors::ClientError;
 
 /// A simple HTTP client wrapper for HiveCore endpoints
 pub struct HttpClient {
     client: Client,
-    base_url: String,
-    headers: HeaderMap,
+    pub base_url: String,
+    pub headers: HeaderMap,
 }
 
 impl HttpClient {
@@ -34,11 +34,21 @@ impl HttpClient {
     }
 
     /// Perform a GET request and deserialize JSON response
-    pub async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
+    pub async fn get<T: serde::de::DeserializeOwned>(
+        &self, 
+        path: &str,
+        headers: Option<HeaderMap<HeaderValue>>,
+    ) -> Result<T, ClientError> {
         let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        
+        let mut used_headers = self.headers.clone();
+        if headers.is_some() {
+            used_headers = headers.unwrap();
+        }
+        
         let res = self.client
             .get(&url)
-            .headers(self.headers.clone())
+            .headers(used_headers)
             .send()
             .await?
             .error_for_status()?;
@@ -51,11 +61,18 @@ impl HttpClient {
         &self,
         path: &str,
         body: &B,
+        headers: Option<HeaderMap<HeaderValue>>,
     ) -> Result<T, ClientError> {
         let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        
+        let mut used_headers = self.headers.clone();
+        if headers.is_some() {
+            used_headers = headers.unwrap();
+        }
+        
         let res = self.client
             .post(&url)
-            .headers(self.headers.clone())
+            .headers(used_headers)
             .json(body)
             .send()
             .await?
@@ -64,20 +81,73 @@ impl HttpClient {
         Ok(data)
     }
 
+    pub async fn post_raw<B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+        headers: Option<HeaderMap<HeaderValue>>,
+    ) -> Result<Response, ClientError> {
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        
+        let mut used_headers = self.headers.clone();
+        if headers.is_some() {
+            used_headers = headers.unwrap();
+        }
+        
+        let res = self.client
+            .post(&url)
+            .headers(used_headers)
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(res)
+    }
+
     pub async fn delete<B: serde::Serialize, T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         body: &B,
+        headers: Option<HeaderMap<HeaderValue>>,
     ) -> Result<T, ClientError> {
         let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+
+        let mut used_headers = self.headers.clone();
+        if headers.is_some() {
+            used_headers = headers.unwrap();
+        }
+
         let res = self.client
             .delete(&url)
-            .headers(self.headers.clone())
+            .headers(used_headers)
             .json(body)
             .send()
             .await?
             .error_for_status()?;
         let data = res.json::<T>().await?;
         Ok(data)
+    }
+
+    pub async fn delete_raw<B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+        headers: Option<HeaderMap<HeaderValue>>,
+    ) -> Result<Response, ClientError> {
+        let url = format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+
+        let mut used_headers = self.headers.clone();
+        if headers.is_some() {
+            used_headers = headers.unwrap();
+        }
+
+        let res = self.client
+            .delete(&url)
+            .headers(used_headers)
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(res)
     }
 }

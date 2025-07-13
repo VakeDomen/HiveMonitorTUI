@@ -36,7 +36,7 @@ pub fn parse_auth_keys(raw: Value) -> AuthKeys {
             // Delegate to serde for normal array of objects
             serde_json::from_value(Value::Array(arr)).unwrap_or_default()
         }
-        other => {
+        _ => {
             // Unexpected type: try to coerce or just bail to empty
             // eprintln!("WARN unexpected /key payload: {:?}", other);
             Vec::new()

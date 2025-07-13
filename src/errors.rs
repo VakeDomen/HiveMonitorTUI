@@ -1,7 +1,4 @@
-use std::{error::Error as StdError, fmt, io::Error, string::FromUtf8Error};
-use reqwest;
-use serde_json;
-use toml;
+use std::{error::Error as StdError, fmt, string::FromUtf8Error};
 use reqwest::header::InvalidHeaderValue;
 
 /// Errors returned by HTTP client operations

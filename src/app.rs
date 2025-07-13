@@ -34,11 +34,7 @@ pub enum ActionType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
-    Nodes,
-    Queues,
-    Keys,
     Console,
-    Logs,
 }
 
 impl Tab {
@@ -46,11 +42,7 @@ impl Tab {
     pub fn all() -> &'static [Tab] {
         &[
             Tab::Dashboard,
-            Tab::Nodes,
-            Tab::Queues,
-            Tab::Keys,
             Tab::Console,
-            Tab::Logs,
         ]
     }
 }
@@ -404,12 +396,11 @@ impl App {
 
     pub fn get_selected_worker_name(&self) -> Option<String> {
         self.worker_statuses.as_ref()
-            .map(|map| {
+            .and_then(|map| {
                 let mut names: Vec<_> = map.keys().filter(|&n| n != "Unauthenticated").cloned().collect();
                 names.sort();
                 names.get(self.selected_worker).cloned()
             })
-            .flatten()
     }
 
 }

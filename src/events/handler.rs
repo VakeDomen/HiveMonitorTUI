@@ -1,13 +1,9 @@
 use std::sync::Arc;
 
-use reqwest::Response;
-use serde_json::Value;
 use tokio::sync::Mutex;
 
 use futures::{StreamExt, TryStreamExt};
-use tokio::io::AsyncBufReadExt;
 use crossterm::event::KeyCode;
-use tokio_util::io::StreamReader;
 
 use crate::{app::{ActionPanelState, ActionType, App, Focus, Tab}, clients::{infer_client::HiveInferClient, manage_client::HiveManageClient}, events::spawner::{Event, EventSpawner}, models::{GenerateRequest, GenerateResponse}};
 
@@ -216,7 +212,7 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                                     // After the operation (streaming or single call) is done,
                                     // ensure the overall status is reflected and clean up.
                                     let mut app = app_arc_for_spawn.lock().await;
-                                    if let ActionPanelState::Response(ref m_name, ref act_type, ref mut lines, ref mut overall_success) = app.action_panel_state {
+                                    if let ActionPanelState::Response(ref _m_name, ref _act_type, ref mut lines, ref mut overall_success) = app.action_panel_state {
                                         if api_overall_result_message.is_err() {
                                             *overall_success = false;
                                             lines.push(api_overall_result_message.unwrap_err()); // Push the error message
@@ -284,13 +280,7 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
             Event::Tick => {
                 // Polling logic remains the same
                 match current_tab {
-                    Tab::Queues => {
-                        if let Ok(resp) = manage_client.get_queue().await {
-                            let mut app = app_arc.lock().await;
-                            app.queue_map = Some(resp)
-                        }
-                    }
-                    Tab::Nodes | Tab::Dashboard => {
+                   Tab::Dashboard => {
                         if let Ok(resp) = manage_client.get_worker_status().await {
                             let mut app = app_arc.lock().await;
                             app.worker_statuses = Some(resp);
@@ -312,13 +302,7 @@ pub async fn handle_events(mut event_spawner: EventSpawner, app_arc: Arc<Mutex<A
                             app.worker_tags = Some(resp);
                         }
                     }
-                    Tab::Keys => {
-                        if let Ok(resp) = manage_client.get_keys().await {
-                            let mut app = app_arc.lock().await;
-                            app.auth_keys = Some(resp);
-                        }
-                    }
-                    _ => {}
+                   _ => {}
                 }
             }
             Event::Stop => break,
@@ -359,74 +343,33 @@ fn on_key_left(app: &mut tokio::sync::MutexGuard<'_, App>) {
     app.focus_left();
 }
 
-async fn on_enter(app: &mut tokio::sync::MutexGuard<'_, App>) {
-    if app.current_tab == Tab::Console {
-        // build the infer client
-        let profile = &app.profiles[app.active_profile];
-        let api = match HiveInferClient::new(
-            format!("{}:{}", profile.host, profile.port_infer),
-            &profile.client_token,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                app.add_banner(format!("Can't contact HiveCore: {}", e));
-                return;
-            },
-        };
-        // pick a model (e.g. first in queue_map) or hardcode
-        let model = app.queue_map
-            .as_ref()
-            .and_then(|qm| qm.keys().next().cloned())
-            .unwrap_or_default();
-        let req = GenerateRequest {
-            model: model.clone(),
-            prompt: app.console_input.clone(),
-            stream: false,
-            node: None,
-        };
-        // run it
-        match api.generate(&req.model, &req.prompt, None, req.stream).await {
-            Ok(raw) => {
-                if let Ok(resp) = serde_json::from_value::<GenerateResponse>(raw) {
-                    app.generate_response = Some(resp.clone());
-                    app.console_output = vec![resp.result];
-                }
-            }
-            Err(e) => app.add_banner(format!("Inference failed: {}", e)),
-        }
-    }
-}
-
 // Renamed and modified `on_enter` to `on_enter_main_view`
 async fn on_enter_main_view(app: &mut tokio::sync::MutexGuard<'_, App>) { // No app_arc here needed
     if app.current_tab == Tab::Dashboard {
-        match app.focus {
-            Focus::ActionsList => {
-                let selected_action_name = app.worker_actions.get(app.selected_action).copied();
-                // This is the source of the problem: `selected_model_name` is from the old flow
-                // and should not be used here to directly jump to Confirmation.
-                // The input field handles the model selection now.
-                // let selected_model_name = app.get_selected_info_panel_model();
+        if app.focus == Focus::ActionsList {
+            let selected_action_name = app.worker_actions.get(app.selected_action).copied();
+            // This is the source of the problem: `selected_model_name` is from the old flow
+            // and should not be used here to directly jump to Confirmation.
+            // The input field handles the model selection now.
+            // let selected_model_name = app.get_selected_info_panel_model();
 
-                match selected_action_name {
-                    Some("Pull model") => {
-                        // Corrected: Transition to input state
-                        app.action_panel_state = ActionPanelState::PullModel;
-                        app.focus = Focus::ActionPanelInput;
-                        app.action_input_model_name.clear(); // Clear input field
-                        app.action_input_cursor_position = 0;
-                    },
-                    Some("Delete model") => {
-                        // Corrected: Transition to input state
-                        app.action_panel_state = ActionPanelState::DeleteModel;
-                        app.focus = Focus::ActionPanelInput;
-                        app.action_input_model_name.clear(); // Clear input field
-                        app.action_input_cursor_position = 0;
-                    },
-                    _ => {}
-                }
-            },
-            _ => {}
+            match selected_action_name {
+                Some("Pull model") => {
+                    // Corrected: Transition to input state
+                    app.action_panel_state = ActionPanelState::PullModel;
+                    app.focus = Focus::ActionPanelInput;
+                    app.action_input_model_name.clear(); // Clear input field
+                    app.action_input_cursor_position = 0;
+                },
+                Some("Delete model") => {
+                    // Corrected: Transition to input state
+                    app.action_panel_state = ActionPanelState::DeleteModel;
+                    app.focus = Focus::ActionPanelInput;
+                    app.action_input_model_name.clear(); // Clear input field
+                    app.action_input_cursor_position = 0;
+                },
+                _ => {}
+            }
         }
     } else if app.current_tab == Tab::Console {
         // Original console logic for generate

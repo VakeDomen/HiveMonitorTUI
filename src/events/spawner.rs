@@ -1,8 +1,7 @@
-use std::f32::consts::E;
 
 use tokio::sync::mpsc;
 use tokio::task;
-use tokio::time::{self, sleep, Duration, Instant};
+use tokio::time::{sleep, Duration, Instant};
 use crossterm::event::{self, Event as CEvent, KeyEvent};
 
 /// Wrapper for input and tick events
@@ -34,23 +33,9 @@ impl EventSpawner {
 
                 tokio::select! {
                     poll_result_handle = crossterm_poll_fut => {
-                        match poll_result_handle {
-                            Ok(Ok(true)) => { 
-                                if let Ok(Ok(CEvent::Key(key))) = task::spawn_blocking(event::read).await {
-                                    let _ = tx_cloned.send(Event::Input(key)).await;
-                                } else {
-                                    // eprintln!("Error reading crossterm event or not a KeyEvent");
-                                }
-                            },
-                            Ok(Ok(false)) => {
-                                // eprintln!("Timeout occurred, no event available in the poll duration.");
-                            },
-                            Ok(Err(e)) => {
-                                // eprintln!("Error polling crossterm events: {}", e);
-                            },
-                            Err(e) => {
-                                // eprintln!("Crossterm poll task panicked: {}", e);
-                                break;
+                        if let Ok(Ok(true)) = poll_result_handle {
+                            if let Ok(Ok(CEvent::Key(key))) = task::spawn_blocking(event::read).await {
+                                let _ = tx_cloned.send(Event::Input(key)).await;
                             }
                         }
                     },

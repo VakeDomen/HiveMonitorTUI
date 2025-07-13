@@ -4,7 +4,6 @@ use ratatui::{
     widgets::{Block, Borders, Table, Row, Cell, Paragraph},
 };
 use crate::app::App;
-use chrono::Local;
 
 /// Draw the Keys tab
 pub fn draw(f: &mut Frame, app: &App) {
@@ -42,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         )
         .header(header)
         .block(Block::default().borders(Borders::ALL))
-        .widths(&[Constraint::Percentage(30), Constraint::Percentage(30), Constraint::Percentage(20), Constraint::Percentage(20)]);
+        .widths([Constraint::Percentage(30), Constraint::Percentage(30), Constraint::Percentage(20), Constraint::Percentage(20)]);
         f.render_widget(table, inner);
     } else {
         let loading = Paragraph::new("Loading keys...")

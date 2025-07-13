@@ -7,7 +7,6 @@ mod app;
 mod ui;
 mod events;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use tokio::sync::Mutex;
@@ -106,11 +105,7 @@ async fn main() -> Result<(), ClientError> {
             terminal.draw(|f| {
                 match app.current_tab {
                     Tab::Dashboard => tabs::dashboard::draw(f, &app),
-                    Tab::Nodes => tabs::nodes::draw(f, &app),
-                    Tab::Queues => tabs::queues::draw(f, &app),
-                    Tab::Keys => tabs::keys::draw(f, &app),
                     Tab::Console => tabs::console::draw(f, &app),
-                    Tab::Logs => tabs::logs::draw(f, &app),
                 }
                 ui::terminal::draw_banners(f, &app.banners);
             })?;

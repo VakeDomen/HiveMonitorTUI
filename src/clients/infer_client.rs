@@ -1,16 +1,14 @@
 // src/clients/infer_client.rs
 
 use futures::StreamExt;
-use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION}};
+use reqwest::{header::{HeaderMap, HeaderValue, AUTHORIZATION}};
 use tokio::sync::Mutex;
-use tokio_util::io::StreamReader;
-use crate::{app::App, errors::ClientError};
+use crate::{app::App, errors::ClientError, utils::http::HttpClient};
 use serde_json::Value;
-use std::{io::BufReader, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 pub struct HiveInferClient {
-    client: Client,
-    base_url: String,
+    client: HttpClient,
     auth_header: HeaderValue,
 }
 
@@ -18,14 +16,10 @@ impl HiveInferClient {
     pub fn new(base_url: impl Into<String>, client_token: &str) -> Result<Self, ClientError> {
         let mut auth_header = HeaderValue::from_str(&format!("Bearer {}", client_token))?;
         auth_header.set_sensitive(true);
-
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()?;
-
+        
+        let client = HttpClient::new(base_url.into(), client_token)?;
         Ok(HiveInferClient {
             client,
-            base_url: base_url.into(),
             auth_header,
         })
     }
@@ -47,37 +41,22 @@ impl HiveInferClient {
         node: Option<&str>,
         stream: bool,
     ) -> Result<Value, ClientError> {
-        let url = format!("{}/api/generate", self.base_url.trim_end_matches('/'));
+        let url = format!("{}/api/generate", self.client.base_url.trim_end_matches('/'));
         let headers = self.make_headers(node)?;
         let body = serde_json::json!({
             "model": model,
             "prompt": prompt,
             "stream": stream
         });
-        let resp = self.client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
+        let resp = self.client.post(&url, &body, Some(headers)).await?;
         Ok(resp)
     }
 
     /// List all models (tags) available on the worker
     pub async fn list_models(&self, node: Option<&str>) -> Result<Vec<String>, ClientError> {
-        let url = format!("{}/api/models", self.base_url.trim_end_matches('/'));
+        let url = format!("{}/api/models", self.client.base_url.trim_end_matches('/'));
         let headers = self.make_headers(node)?;
-        let resp = self.client
-            .get(&url)
-            .headers(headers)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Vec<String>>()
-            .await?;
+        let resp = self.client.get(&url, Some(headers)).await?;
         Ok(resp)
     }
 
@@ -86,17 +65,12 @@ impl HiveInferClient {
     /// POST /api/pull with body `{ "name": "<model>" }`
     /// This method will now stream JSON lines and update the App state.
     pub async fn pull_model(&self, model: &str, node: Option<&str>, app_arc: Arc<Mutex<App>>) -> Result<(), ClientError> {
-        let url = format!("{}/api/pull", self.base_url.trim_end_matches('/'));
+        let url = format!("{}/api/pull", self.client.base_url.trim_end_matches('/'));
         let headers = self.make_headers(node)?;
         let body = serde_json::json!({ "name": model });
-
         let resp = self.client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+            .post_raw(&url, &body, Some(headers))
+            .await?;
 
         // Get the byte stream from the response
         let mut byte_stream = resp.bytes_stream(); // This exists!
@@ -112,7 +86,7 @@ impl HiveInferClient {
             while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
                 let line_bytes = buffer.drain(..=newline_pos).collect::<Vec<u8>>();
                 let trimmed_line = String::from_utf8(line_bytes) // Convert to String
-                    .map_err(|e| ClientError::Decode(e))?
+                    .map_err(ClientError::Decode)?
                     .trim()
                     .to_string(); // Trim and own the string
 
@@ -130,7 +104,7 @@ impl HiveInferClient {
                             .unwrap_or_else(|| json_value.to_string());
 
                         // Assuming "error" field indicates failure if present and not null/false
-                        let is_line_success = json_value.get("error").map_or(true, |err| err.is_null() || !err.as_bool().unwrap_or(false));
+                        let is_line_success = json_value.get("error").is_none_or(|err| err.is_null() || !err.as_bool().unwrap_or(false));
 
                         if !is_line_success {
                             overall_success = false;
@@ -151,7 +125,7 @@ impl HiveInferClient {
         // Process any remaining data in the buffer after the stream ends (e.g., last line without newline)
         if !buffer.is_empty() {
             let remaining_line = String::from_utf8(buffer)
-                .map_err(|e| ClientError::Decode(e))?
+                .map_err(ClientError::Decode)?
                 .trim()
                 .to_string();
             if !remaining_line.is_empty() {
@@ -162,7 +136,7 @@ impl HiveInferClient {
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| json_value.to_string());
-                        let is_line_success = json_value.get("error").map_or(true, |err| err.is_null() || !err.as_bool().unwrap_or(false));
+                        let is_line_success = json_value.get("error").is_none_or(|err| err.is_null() || !err.as_bool().unwrap_or(false));
                         if !is_line_success { overall_success = false; }
                         app_arc.lock().await.add_action_output_line(message, is_line_success);
                     },
@@ -187,17 +161,13 @@ impl HiveInferClient {
     }
 
     pub async fn delete_model(&self, model: &str, node: Option<&str>, app_arc: Arc<Mutex<App>>) -> Result<(), ClientError> {
-        let url = format!("{}/api/delete", self.base_url.trim_end_matches('/'));
+        let url = format!("{}/api/delete", self.client.base_url.trim_end_matches('/'));
         let headers = self.make_headers(node)?;
         let body = serde_json::json!({ "name": model });
 
         let resp = self.client
-            .delete(&url) // Use DELETE method
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+            .delete_raw(&url, &body, Some(headers))
+            .await?;
 
         let mut byte_stream = resp.bytes_stream();
         let mut buffer = Vec::new();
@@ -211,7 +181,7 @@ impl HiveInferClient {
             while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
                 let line_bytes = buffer.drain(..=newline_pos).collect::<Vec<u8>>();
                 let trimmed_line = String::from_utf8(line_bytes)
-                    .map_err(|e| ClientError::Decode(e))?
+                    .map_err(ClientError::Decode)?
                     .trim()
                     .to_string();
 
@@ -227,7 +197,7 @@ impl HiveInferClient {
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| json_value.to_string());
 
-                        let is_line_success = json_value.get("error").map_or(true, |err| err.is_null() || !err.as_bool().unwrap_or(false));
+                        let is_line_success = json_value.get("error").is_none_or(|err| err.is_null() || !err.as_bool().unwrap_or(false));
 
                         if !is_line_success {
                             overall_success = false;
@@ -247,7 +217,7 @@ impl HiveInferClient {
 
         if !buffer.is_empty() {
             let remaining_line = String::from_utf8(buffer)
-                .map_err(|e| ClientError::Decode(e))?
+                .map_err(ClientError::Decode)?
                 .trim()
                 .to_string();
             if !remaining_line.is_empty() {
@@ -258,7 +228,7 @@ impl HiveInferClient {
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| json_value.to_string());
-                        let is_line_success = json_value.get("error").map_or(true, |err| err.is_null() || !err.as_bool().unwrap_or(false));
+                        let is_line_success = json_value.get("error").is_none_or(|err| err.is_null() || !err.as_bool().unwrap_or(false));
                         if !is_line_success { overall_success = false; }
                         app_arc.lock().await.add_action_output_line(message, is_line_success);
                     },
@@ -293,7 +263,7 @@ impl HiveInferClient {
     ) -> Result<reqwest::Response, ClientError> {
         let url = format!(
             "{}/api/generate?stream=true",
-            self.base_url.trim_end_matches('/')
+            self.client.base_url.trim_end_matches('/')
         );
         let headers = self.make_headers(node)?;
         let body = serde_json::json!({
@@ -301,12 +271,8 @@ impl HiveInferClient {
             "prompt": prompt,
         });
         let resp = self.client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?; // keep the Response for streaming
+            .post_raw(&url, &body, Some(headers))
+            .await?;
         Ok(resp)
     }
 }

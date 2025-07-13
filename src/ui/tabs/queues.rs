@@ -31,7 +31,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             )
             .header(Row::new(vec![Cell::from("Queue"), Cell::from("Count")]))
             .block(Block::default().borders(Borders::ALL))
-            .widths(&[Constraint::Percentage(70), Constraint::Percentage(30)]);
+            .widths([Constraint::Percentage(70), Constraint::Percentage(30)]);
         f.render_widget(table, cols[0]);
 
         // TODO: render node-specific queues in cols[1]

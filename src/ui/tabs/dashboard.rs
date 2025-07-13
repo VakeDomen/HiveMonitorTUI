@@ -241,7 +241,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(p, worker_grid_inner_area);
         } else {
             let cols = (worker_count as f32).sqrt().ceil() as u16;
-            let rows = (worker_count as u16 + cols - 1) / cols;
+            let rows = (worker_count as u16).div_ceil(cols);
 
             let row_constraints: Vec<Constraint> = (0..rows)
                 .map(|_| Constraint::Min(3))
@@ -251,7 +251,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                 .constraints(row_constraints)
                 .split(worker_grid_inner_area);
 
-            for (r_idx, row_rect) in row_layout.into_iter().enumerate() {
+            for (r_idx, row_rect) in row_layout.iter().enumerate() {
                 let col_constraints: Vec<Constraint> = (0..cols)
                     .map(|_| Constraint::Ratio(1, cols as u32))
                     .collect();
@@ -260,8 +260,8 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                     .constraints(col_constraints)
                     .split(*row_rect);
 
-                for (c_idx, cell_area) in col_layout.into_iter().enumerate() {
-                    let idx = r_idx as usize * cols as usize + c_idx as usize;
+                for (c_idx, cell_area) in col_layout.iter().enumerate() {
+                    let idx = r_idx * cols as usize + c_idx;
                     if let Some(name) = names.get(idx) {
                         let worker_block = Block::default()
                             .title(name.as_str())
@@ -300,7 +300,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
                                 0
                             }.max(1);
 
-                            let required_square_rows = (connection_count as u16 + max_squares_per_line - 1) / max_squares_per_line;
+                            let required_square_rows = (connection_count as u16).div_ceil(max_squares_per_line);
 
                             let square_rows_total_height = required_square_rows;
                             let square_vertical_margin = 0;
@@ -324,7 +324,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
 
                                 for row_num in 0..required_square_rows {
                                     if let Some(row_rect_for_squares) = actual_square_row_layout.get(row_num as usize) {
-                                        let start_idx = row_num * max_squares_per_line as u16;
+                                        let start_idx = row_num * max_squares_per_line;
                                         let end_idx = (start_idx + max_squares_per_line).min(connection_count as u16);
                                         let squares_in_this_row = end_idx - start_idx;
 
@@ -389,7 +389,7 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
         for name in sorted_queue_names {
             let cnt = queues.get(name).unwrap();
             if name.starts_with("Model:") {
-                model_lines.push(Line::from(format!("{}", name.replace("Model: ", ""))));
+                model_lines.push(Line::from(name.replace("Model: ", "").to_string()));
             } else if name.starts_with("Node:") {
                 worker_lines.push(Line::from(format!("{}: {}", name.replace("Node: ", ""), cnt)));
             } else {
@@ -404,14 +404,14 @@ fn draw_global_view(f: &mut Frame, area: Rect, app: &App) {
     let model_paragraph = Paragraph::new(vec![
         Line::from(Span::styled("MODEL", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
         Line::from(""),
-    ].into_iter().chain(model_lines.into_iter()).collect::<Vec<Line>>())
+    ].into_iter().chain(model_lines).collect::<Vec<Line>>())
     .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
     f.render_widget(model_paragraph, model_queues_area);
 
     let worker_paragraph = Paragraph::new(vec![
         Line::from(Span::styled("WORKER", Style::default().add_modifier(Modifier::BOLD).fg(COLOR_CATEGORY_TITLE))),
         Line::from(""),
-    ].into_iter().chain(worker_lines.into_iter()).collect::<Vec<Line>>())
+    ].into_iter().chain(worker_lines).collect::<Vec<Line>>())
     .style(Style::default().fg(COLOR_DEFAULT_FG).bg(COLOR_DEFAULT_BG));
     f.render_widget(worker_paragraph, worker_queues_area);
 }

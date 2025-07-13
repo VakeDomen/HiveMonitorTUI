@@ -1,4 +1,3 @@
-use clap::builder::Str;
 // src/models.rs
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};

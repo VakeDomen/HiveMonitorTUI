@@ -54,7 +54,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         )
         .header(header)
         .block(Block::default().borders(Borders::ALL))
-        .widths(&[Constraint::Percentage(20), Constraint::Percentage(15), Constraint::Percentage(15), Constraint::Percentage(25), Constraint::Percentage(25)]);
+        .widths([Constraint::Percentage(20), Constraint::Percentage(15), Constraint::Percentage(15), Constraint::Percentage(25), Constraint::Percentage(25)]);
         f.render_widget(table, inner);
     } else {
         // Loading or error state

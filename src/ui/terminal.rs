@@ -1,9 +1,8 @@
-use std::{io, time::Duration};
-use crossterm::{execute, terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode}, cursor};
+use std::io;
+use crossterm::{execute, terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode}};
 use ratatui::{backend::CrosstermBackend, Terminal, Frame};
 use ratatui::layout::{Rect};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use crate::app::App;
 
 /// Set up the terminal in raw mode and enter the alternate screen
 pub fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -30,7 +29,7 @@ pub fn draw_banners(f: &mut Frame, banners: &[String]) {
         return;
     }
     // Reserve the first line for banners
-    let area = Rect { x: 0, y: 0, width: f.size().width, height: banners.len() as u16 };
+    let area = Rect { x: 0, y: 0, width: f.area().width, height: banners.len() as u16 };
     let text = banners.join(" | ");
     let para = Paragraph::new(text)
         .block(Block::default().borders(Borders::NONE));

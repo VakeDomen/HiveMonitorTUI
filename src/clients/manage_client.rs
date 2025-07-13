@@ -17,50 +17,50 @@ impl HiveManageClient {
 
     /// Fetch all queue lengths (model- and node-based)
     pub async fn get_queue(&self) -> Result<QueueMap, ClientError> {
-        let raw = self.http.get("queue").await?;
+        let raw = self.http.get("queue", None).await?;
         Ok(serde_json::from_value(raw)?)
     }
 
     /// Fetch concurrent connection counts per node
     pub async fn get_worker_connections(&self) -> Result<WorkerConnections, ClientError> {
-        let raw = self.http.get("worker/connections").await?;
+        let raw = self.http.get("worker/connections", None).await?;
         Ok(serde_json::from_value(raw)?)
     }
 
     /// Fetch verification status per node
     pub async fn get_worker_status(&self) -> Result<WorkerStatuses, ClientError> {
-        let raw = self.http.get("worker/status").await?;
+        let raw = self.http.get("worker/status", None).await?;
         Ok(serde_json::from_value(raw)?)
     }
 
     /// Fetch last ping timestamps per node
     pub async fn get_worker_pings(&self) -> Result<crate::models::WorkerPings, ClientError> {
-        let raw = self.http.get("worker/pings").await?;
+        let raw = self.http.get("worker/pings", None).await?;
         Ok(crate::utils::parsing::parse_worker_pings(raw))
     }
 
     /// Fetch supported model tags per node
     pub async fn get_worker_tags(&self) -> Result<WorkerTags, ClientError> {
-        let raw = self.http.get("worker/tags").await?;
+        let raw = self.http.get("worker/tags", None).await?;
         Ok(serde_json::from_value(raw)?)
     }
 
     /// Fetch HiveCore and Ollama versions per node
     pub async fn get_worker_versions(&self) -> Result<WorkerVersions, ClientError> {
-        let raw = self.http.get("worker/versions").await?;
+        let raw = self.http.get("worker/versions", None).await?;
         Ok(serde_json::from_value(raw)?)
     }
 
     /// List all authentication keys
     pub async fn get_keys(&self) -> Result<AuthKeys, ClientError> {
-        let raw = self.http.get("key").await?;
+        let raw = self.http.get("key", None).await?;
         Ok(crate::utils::parsing::parse_auth_keys(raw))
     }
 
     /// Create a new authentication key
     pub async fn create_key(&self, name: &str, role: &str) -> Result<AuthKeys, ClientError> {
         let body = serde_json::json!({ "name": name, "role": role });
-        let raw = self.http.post("key", &body).await?;
+        let raw = self.http.post("key", &body, None).await?;
         Ok(crate::utils::parsing::parse_auth_keys(raw))
     }
 }
